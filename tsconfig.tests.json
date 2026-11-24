@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "CommonJS",
+    "lib": ["ES2022"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "moduleResolution": "node",
+    "outDir": "./dist-tests",
+    "rootDir": ".",
+    "types": ["node"]
+  },
+  "include": ["tests/**/*", "src/context/**/*"],
+  "exclude": ["node_modules", "dist", "dist-tests"]
+}
