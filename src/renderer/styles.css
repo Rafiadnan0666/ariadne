@@ -613,3 +613,20 @@ body {
 .status-spacer {
   flex: 1;
 }
+
+.no-tab-selected {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--text-secondary);
+  font-size: 16px;
+  background: var(--bg-darker);
+}
+
+.new-tab-placeholder {
+  background: var(--bg-darker) !important;
+  border-style: dashed !important;
+  color: var(--text-secondary);
+  justify-content: center;
+}

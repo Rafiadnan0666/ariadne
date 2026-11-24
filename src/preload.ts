@@ -7,6 +7,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   setActiveTab: (id: string) => ipcRenderer.invoke('tab:set-active', id),
   getTabs: () => ipcRenderer.invoke('tab:get-all'),
   setUrl: (id: string, url: string) => ipcRenderer.invoke('tab:url', id, url),
+  setTabWebContents: (id: string, webContentsId: number) => ipcRenderer.invoke('tab:set-web-contents', id, webContentsId),
+  setTabTitle: (id: string, title: string) => ipcRenderer.invoke('tab:set-title', id, title),
   back: () => ipcRenderer.invoke('tab:back'),
   forward: () => ipcRenderer.invoke('tab:forward'),
   reload: () => ipcRenderer.invoke('tab:reload'),
@@ -45,6 +47,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
     // Chat
     chatComplete: (request: any) => ipcRenderer.invoke('ai:chat:complete', request),
+    chatStream: (request: any) => ipcRenderer.invoke('ai:chat:stream', request),
+    onStreamChunk: (callback: (chunk: any) => void) => {
+      const handler = (_e: any, chunk: any) => callback(chunk)
+      ipcRenderer.on('ai:stream-chunk', handler)
+      return () => ipcRenderer.removeListener('ai:stream-chunk', handler)
+    },
+
+    // Page Extraction
+    extractPage: (tabId: string) => ipcRenderer.invoke('ai:extract-page', tabId),
+    getTabsContext: (tabIds: string[]) => ipcRenderer.invoke('ai:get-tabs-context', tabIds),
+
+    // Context Retrieval
+    contextRetrieve: (query: string, tabIds?: string[]) => ipcRenderer.invoke('ai:context:retrieve', query, tabIds),
+    contextFormat: (query: string, tabIds?: string[]) => ipcRenderer.invoke('ai:context:format', query, tabIds),
+    contextIngest: (tabId: string) => ipcRenderer.invoke('ai:context:ingest', tabId),
 
     // Usage
     getUsage: (providerId?: string, since?: number) => ipcRenderer.invoke('ai:usage', providerId, since),

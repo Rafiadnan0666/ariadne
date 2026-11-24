@@ -1,5 +1,5 @@
-import { app, ipcMain, BrowserWindow } from 'electron'
-import { init as initTabs, createTab, closeTab, setActiveTab, setUrl, getHistory, addHistory, getTabs } from './tabs'
+import { app, ipcMain, BrowserWindow, webContents, session } from 'electron'
+import { init as initTabs, createTab, closeTab, setActiveTab, setUrl, getHistory, addHistory, getTabs, setTabWebContents, setTabTitle, TabState } from './tabs'
 import { aiSystem } from './ai'
 import * as path from 'path'
 
@@ -35,10 +35,16 @@ app.whenReady().then(async () => {
 
   // Tab IPC
   ipcMain.handle('tab:create', async (_e, url?: string) => {
-    return createTab(url)
+    const id = await createTab(url)
+    const tab = getTabs().find(t => t.id === id)
+    if (tab) {
+      aiSystem.registerTab(id, 0, tab.url, tab.title, tab.isPrivate || false)
+    }
+    return id
   })
 
   ipcMain.handle('tab:close', async (_e, id: string) => {
+    aiSystem.unregisterTab(id)
     return closeTab(id)
   })
 
@@ -51,7 +57,48 @@ app.whenReady().then(async () => {
   })
 
   ipcMain.handle('tab:url', async (_e, id: string, url: string) => {
+    // Navigating away invalidates the old page context for this tab.
+    aiSystem.unregisterTab(id)
     return setUrl(id, url)
+  })
+
+  // Track webContents for each tab
+  ipcMain.handle('tab:set-web-contents', async (_e, id: string, webContentsId: number) => {
+    setTabWebContents(id, webContentsId)
+    const tab = getTabs().find(t => t.id === id)
+    if (tab) {
+      aiSystem.registerTab(id, webContentsId, tab.url, tab.title, tab.isPrivate || false)
+    }
+  })
+
+  // WebContents event tracking
+  if (mainWindow) {
+    mainWindow.webContents.on('did-navigate', (_event, url) => {
+      const activeTab = getTabs().find(t => t.active)
+      if (activeTab && activeTab.webContentsId) {
+        aiSystem.registerTab(activeTab.id, activeTab.webContentsId, url, activeTab.title || 'Untitled', activeTab.isPrivate || false)
+      }
+    })
+
+    mainWindow?.webContents.on('page-title-updated', (_event, title) => {
+      const activeTab = getTabs().find(t => t.active)
+      if (activeTab && activeTab.webContentsId && mainWindow) {
+        setTabTitle(activeTab.id, title)
+        aiSystem.registerTab(activeTab.id, activeTab.webContentsId, activeTab.url, title, activeTab.isPrivate || false)
+        mainWindow.webContents.send('url-changed', activeTab.id, activeTab.url, title)
+      }
+    })
+
+    mainWindow.webContents.on('did-finish-load', () => {
+      const activeTab = getTabs().find(t => t.active)
+      if (activeTab && activeTab.webContentsId) {
+        aiSystem.registerTab(activeTab.id, activeTab.webContentsId, activeTab.url, activeTab.title || 'Untitled', activeTab.isPrivate || false)
+      }
+    })
+  }
+
+  ipcMain.handle('tab:set-title', async (_e, id: string, title: string) => {
+    setTabTitle(id, title)
   })
 
   ipcMain.handle('tab:back', async () => {
@@ -141,12 +188,6 @@ app.whenReady().then(async () => {
     return aiSystem.getRegistry().chatCompletion(request)
   })
 
-  ipcMain.handle('ai:chat:stream', async (_e, request) => {
-    // For streaming, we use a different pattern - return chunks via callback
-    // This is simplified; real implementation would use event emitter
-    throw new Error('Use ai:chat:stream-events for streaming')
-  })
-
   ipcMain.handle('ai:system-prompt:get', async () => {
     return aiSystem.getSystemPrompt()
   })
@@ -157,6 +198,63 @@ app.whenReady().then(async () => {
 
   ipcMain.handle('ai:provider-types', async () => {
     return aiSystem.getProviderTypes()
+  })
+
+  // Page Extraction IPC
+  ipcMain.handle('ai:extract-page', async (_e, tabId: string) => {
+    return aiSystem.extractPage(tabId)
+  })
+
+  ipcMain.handle('ai:get-tabs-context', async (_e, tabIds: string[]) => {
+    return aiSystem.getTabsContext(tabIds)
+  })
+
+  // Context Retrieval IPC
+  ipcMain.handle('ai:context:retrieve', async (_e, query: string, tabIds?: string[]) => {
+    return aiSystem.getContextForQuery(query, tabIds)
+  })
+
+  ipcMain.handle('ai:context:format', async (_e, query: string, tabIds?: string[]) => {
+    return aiSystem.formatContextForLLM(query, tabIds)
+  })
+
+  ipcMain.handle('ai:context:ingest', async (_e, tabId: string) => {
+    await aiSystem.ingestTab(tabId)
+  })
+
+  // Cross-tab context IPC (replaces old context:* namespace)
+  // These are now handled by ai:* namespace:
+  // ai:context:retrieve, ai:context:format, ai:context:ingest
+  // Page extraction: ai:extract-page, ai:get-tabs-context
+
+  // Streaming chat
+  ipcMain.handle('ai:chat:stream', async (_e, request) => {
+    const { ProviderRegistry } = await import('./ai/registry')
+    const registry = aiSystem.getRegistry()
+    
+    return new Promise<{ id: string; model: string; choices: any[]; usage?: any }>((resolve, reject) => {
+      const chunks: any[] = []
+      let accumulatedUsage: any = undefined
+      let finishReason = 'stop'
+      
+      registry.chatCompletionStream(request, (chunk: any) => {
+        if (chunk.usage) accumulatedUsage = chunk.usage
+        if (chunk.choices[0]?.finishReason) finishReason = chunk.choices[0].finishReason
+        chunks.push(chunk)
+        
+        // Emit to renderer via webContents
+        if (mainWindow) {
+          mainWindow.webContents.send('ai:stream-chunk', chunk)
+        }
+      }).then(() => {
+        resolve({
+          id: `stream-${Date.now()}`,
+          model: request.model,
+          choices: [{ index: 0, message: { role: 'assistant', content: '' }, finishReason }],
+          usage: accumulatedUsage,
+        })
+      }).catch(reject)
+    })
   })
 
   // Security

@@ -1,4 +1,4 @@
-# Ariadne - Phase 1+2 Handoff Document
+# Ariadne - Phase 1+3 Handoff Document
 
 ## 1. Project Overview
 Ariadne is a serious desktop browser (inspired by Chrome) built around multi-provider AI agents, cross-tab understanding, security, and low resource use.
@@ -7,6 +7,7 @@ Ariadne is a serious desktop browser (inspired by Chrome) built around multi-pro
 - Architecture investigation & feasibility assessment (Tauri 2 rejected, Electron accepted)
 - Phase 1 foundation: Multi-tab layout, navigation, SQLite persistence schema, address bar handling, secure boundary
 - Phase 2: AI provider abstraction, registry, secure credentials, model slot routing, IPC surface, **sidebar chat with streaming, current-tab context extraction**
+- Phase 3: Cross-tab intelligence (embedding storage, vector retrieval, multi-tab context synthesis)
 
 ---
 
@@ -26,7 +27,7 @@ Ariadne is a serious desktop browser (inspired by Chrome) built around multi-pro
 
 ---
 
-## 3. Implemented Features (Phase 1 + 2)
+## 3. Implemented Features (Phase 1 + 2 + 3)
 
 ### Phase 1 (Verified Working)
 - **Multi-Tab Foundation:** Real independent web contexts with custom Tab strip (create, switch, close)
@@ -49,6 +50,17 @@ Ariadne is a serious desktop browser (inspired by Chrome) built around multi-pro
 - **Current-Tab Context:** Extraction via `webContents.executeJavaScript` (URL, title, readable text, selected text, headings, metadata)
 - **Context Control:** User sees exactly what page content is sent, can disable, private tabs excluded
 - **Source Citations:** Factual answers from page content cite source URL
+
+### Phase 3 (Cross-Tab Intelligence - Complete)
+- **Page Extraction Pipeline:** `PageExtractor.ts` extracts from live tabs via `webContents.executeJavaScript` + separate `extraction-script.js`
+- **Embedding Store:** `EmbeddingStore.ts` stores chunked page content with vector embeddings (JSON-based, SQLite-backed)
+- **Session Context Manager:** `SessionContext.ts` coordinates ingestion, retrieval, and LLM formatting
+- **Vector Retrieval:** Cosine similarity search over stored embeddings (configurable max chunks/tokens)
+- **Multi-Tab Context:** `ai:get-tabs-context` and `ai:context:retrieve` IPC for cross-tab queries
+- **Context Ingestion:** `ai:context:ingest` stores page content into embedding store for later retrieval
+- **LLM Formatting:** `ai:context:format` returns formatted context string with source citations
+- **Private Browsing Exclusion:** Private tabs never stored in embeddings, never returned in context
+- **Bounded Context:** Max tokens/chunks configurable per query
 
 ---
 
@@ -107,6 +119,11 @@ ai:usage-total(since?: number) → { promptTokens, completionTokens, totalTokens
 // Page Extraction
 ai:extract-page(tabId: string) → ExtractedPage | null
 ai:get-tabs-context(tabIds: string[]) → string
+
+// Context Retrieval (Phase 3)
+ai:context:retrieve(query: string, tabIds?: string[]) → RetrievalResult
+ai:context:format(query: string, tabIds?: string[]) → string  // formatted for LLM with citations
+ai:context:ingest(tabId: string) → void  // store page content for retrieval
 ```
 
 ### Preload API (Renderer Access)
@@ -129,8 +146,11 @@ window.electronAPI.ai.setSystemPrompt(prompt)
 window.electronAPI.ai.chat(request)           // non-streaming
 window.electronAPI.ai.chatStream(request)     // streaming (emits ai:stream-chunk events)
 window.electronAPI.ai.onStreamChunk(callback) // subscribe to stream chunks
-window.electronAPI.ai.extractPage(tabId)
-window.electronAPI.ai.getTabsContext(tabIds)
+window.electronAPI.ai.extractPage(tabId)      // Page extraction
+window.electronAPI.ai.getTabsContext(tabIds)  // Tab context
+window.electronAPI.ai.contextRetrieve(query, tabIds?)  // Vector context retrieval
+window.electronAPI.ai.contextFormat(query, tabIds?)    // Format context for LLM
+window.electronAPI.ai.contextIngest(tabId)             // Store page content
 window.electronAPI.ai.getUsage(providerId?, since?)
 window.electronAPI.ai.getTotalUsage(since?)
 ```
@@ -197,21 +217,35 @@ interface ChatCompletionChunk {
 
 ---
 
-## 6. What Session C (Cross-Tab Intelligence) Needs From Shell
+## 6. Phase 3 Implementation (Cross-Tab Intelligence - Complete)
 
-### Page Extraction Pipeline (Already Implemented - `src/main/ai/context/PageExtractor.ts`)
+### Page Extraction Pipeline (`src/main/ai/context/PageExtractor.ts`)
 - **Entry point:** `webContents.executeJavaScript(EXTRACTION_SCRIPT, true)` in main process
-- **Script location:** `src/main/ai/context/extraction-script.js` (separate JS file)
-- **Output:** Clean text, markdown, DOM snapshot, metadata, links, headings
+- **Script location:** `src/main/ai/context/extraction-script.js` (separate JS file, runs in page context)
+- **Output:** Clean text, metadata, links, headings, accessibility info
 - **IPC:** `ai:extract-page(tabId)` → `ExtractedPage`
+- **Private tab exclusion:** Skips extraction for private browsing tabs
 
-### Context Retrieval for Phase 3
-- Embedding provider: Use `aiSystem.getConfig().embeddingProviderId` (configurable)
-- Vector similarity: Cosine similarity over stored embeddings (SQLite `embeddings` table)
-- IPC needed: `ai:context:retrieve(query, tabIds?)` → relevant chunks with citations
-- Session context manager: `src/main/ai/context/SessionContext.ts` (skeleton exists)
+### Embedding Store (`src/main/ai/context/EmbeddingStore.ts`)
+- **Storage:** JSON file (`ariadne-embeddings.json`) with chunk metadata and vectors
+- **Chunking:** Automatic sentence-based chunking with token budgeting
+- **Embeddings:** Configurable provider (OpenAI, local, etc.) — placeholder uses hash-based vectors
+- **Vector search:** Cosine similarity with configurable top-k and token budget
 
-### Agent Runtime (Phase 4)
+### Session Context Manager (`src/main/ai/context/SessionContext.ts`)
+- **Ingestion:** `ingestTab(tabId)` extracts page and stores chunks with embeddings
+- **Retrieval:** `retrieve(query, tabIds?)` returns relevant chunks via vector similarity
+- **LLM formatting:** `formatForLLM(result)` returns formatted string with source citations
+- **Config:** Max context tokens, max chunks, embedding provider ID
+
+### IPC for Phase 3
+```typescript
+ai:context:retrieve(query: string, tabIds?: string[]) → RetrievalResult
+ai:context:format(query: string, tabIds?: string[]) → string
+ai:context:ingest(tabId: string) → void
+```
+
+### Agent Runtime (Phase 4 - Planned)
 - Tool definitions in `src/main/ai/agents/tools/` (browser, extract, interact)
 - `AgentRuntime.run(task, context)` → async iterator of steps
 - Planner decomposes goals → tool sequences
@@ -329,7 +363,7 @@ interface ModelCapability {
 
 ---
 
-## 13. Source Files Modified (Phase 2)
+## 13. Source Files Modified (Phase 2 + 3)
 
 ### New Files
 - `src/main/ai/types.ts` — Core type definitions
@@ -344,14 +378,15 @@ interface ModelCapability {
 - `src/main/ai/providers/index.ts` — Factory and exports
 - `src/main/ai/context/PageExtractor.ts` — Page content extraction
 - `src/main/ai/context/extraction-script.js` — DOM extraction script
-- `src/main/ai/context/SessionContext.ts` — Cross-tab context manager (skeleton)
+- `src/main/ai/context/EmbeddingStore.ts` — Vector embedding storage
+- `src/main/ai/context/SessionContext.ts` — Cross-tab context manager
 - `src/main/ai/index.ts` — AI system facade
 - `src/renderer/components/ai/ChatSidebar.tsx` — Sidebar chat component
 - `src/renderer/global.d.ts` — Updated TypeScript declarations
 
 ### Modified Files
-- `src/main/index.ts` — Added AI IPC handlers
-- `src/preload.ts` — Exposed AI API to renderer
+- `src/main/index.ts` — Added AI IPC handlers (page extraction, context retrieval)
+- `src/preload.ts` — Exposed AI API to renderer (context API)
 - `src/renderer/main.tsx` — Integrated sidebar toggle and ChatSidebar
 - `src/renderer/styles.css` — Added AI sidebar styles
 - `docs/HANDOFF.md` — This document

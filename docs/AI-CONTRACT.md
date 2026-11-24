@@ -171,6 +171,9 @@ interface ContextChunk {
 // Required IPC for Phase 3:
 ai:context:retrieve(query: string, tabIds?: string[], maxChunks?: number) → RetrievalResult
 ai:context:get-for-query(query: string, tabIds?: string[]) → string  // formatted for LLM
+ai:context:ingest(tabId: string) → void                        // store page for retrieval
+ai:extract-page(tabId: string) → ExtractedPage | null           // page extraction
+ai:get-tabs-context(tabIds: string[]) → string                  // multi-tab summary
 ```
 
 ---
@@ -249,7 +252,7 @@ unsubscribe(); // cleanup
 
 | Contract Version | Date | Compatible Sessions |
 |------------------|------|---------------------|
-| 1.0.0 | 2026-11-24 | Phase 2 complete, Phase 3 ready |
+| 1.1.0 | 2026-11-24 | Phase 2 complete, Phase 3 complete |
 
 **Breaking changes require:**
 1. Update this document

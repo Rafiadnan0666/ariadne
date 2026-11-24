@@ -22,9 +22,13 @@ interface ModelInfo {
 interface PageContext {
   url: string
   title: string
-  text: string
+  readableText: string
   selectedText?: string
   headings: Array<{ level: number; text: string }>
+  metadata: Record<string, string>
+  links: Array<{ url: string; text: string; title?: string }>
+  timestamp: number
+  tabId: string
   isPrivate: boolean
 }
 
@@ -102,13 +106,7 @@ export const ChatSidebar: React.FC<{ isOpen: boolean; onClose: () => void; activ
       try {
         const context = await window.electronAPI.ai.extractPage(activeTabId)
         if (context) {
-          setPageContext({
-            url: context.url,
-            title: context.title,
-            text: context.text,
-            headings: context.metadata?.headings || [],
-            isPrivate: false, // TODO: detect private browsing
-          })
+          setPageContext(context)
         }
       } catch (e) {
         console.error('Failed to extract page context:', e)
@@ -145,7 +143,7 @@ export const ChatSidebar: React.FC<{ isOpen: boolean; onClose: () => void; activ
 
     // Add page context if enabled and available
     if (includePageContext && pageContext) {
-      const contextMessage = `Page context from ${pageContext.title} (${pageContext.url}):\n\n${pageContext.text.substring(0, 8000)}`
+      const contextMessage = `Page context from ${pageContext.title} (${pageContext.url}):\n\n${pageContext.readableText.substring(0, 8000)}`
       chatMessages.unshift({ role: 'system', content: contextMessage })
     }
 
@@ -327,11 +325,11 @@ export const ChatSidebar: React.FC<{ isOpen: boolean; onClose: () => void; activ
                 checked={includePageContext}
                 onChange={e => setIncludePageContext(e.target.checked)}
               />
-              Include page context ({formatContextSize(pageContext.text)})
+              Include page context ({formatContextSize(pageContext.readableText)})
             </label>
             <details>
               <summary>{pageContext.title} - {pageContext.url}</summary>
-              <pre>{pageContext.text.substring(0, 500)}...</pre>
+              <pre>{pageContext.readableText.substring(0, 500)}...</pre>
             </details>
           </div>
         )}

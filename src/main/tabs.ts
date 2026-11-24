@@ -1,5 +1,5 @@
 import * as path from 'path'
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow, WebContents } from 'electron'
 import * as SQLite from 'sqlite3'
 
 export interface TabState {
@@ -7,6 +7,8 @@ export interface TabState {
   url: string
   title: string
   active: boolean
+  webContentsId?: number
+  isPrivate?: boolean
 }
 
 const dbPath = path.join(app.getPath('userData'), 'ariadne.db')
@@ -33,13 +35,15 @@ export function getTabById(id: string): TabState | undefined {
   return tabs.get(id)
 }
 
-export async function createTab(url?: string): Promise<string> {
+export async function createTab(url?: string, webContentsId?: number, isPrivate?: boolean): Promise<string> {
   const id = String(nextTabId++)
   const tab: TabState = {
     id,
     url: url || 'about:blank',
     title: 'New Tab',
-    active: true
+    active: true,
+    webContentsId,
+    isPrivate
   }
   tabs.set(id, tab)
   return id
@@ -69,6 +73,20 @@ export async function setUrl(id: string, url: string): Promise<void> {
       Date.now()
     ])
     db.close()
+  }
+}
+
+export function setTabWebContents(id: string, webContentsId: number): void {
+  const tab = tabs.get(id)
+  if (tab) {
+    tab.webContentsId = webContentsId
+  }
+}
+
+export function setTabTitle(id: string, title: string): void {
+  const tab = tabs.get(id)
+  if (tab) {
+    tab.title = title
   }
 }
 

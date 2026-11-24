@@ -1,3 +1,11 @@
+import type {
+  ContextSelection,
+  ExtractionBatchResult,
+  PickerState,
+  PreviewResult,
+  QAAnswer,
+} from '../context/types'
+
 export {}
 
 declare global {
@@ -46,6 +54,31 @@ declare global {
         // Usage tracking
         getUsage: (providerId?: string, since?: number) => Promise<any[]>
         getTotalUsage: (since?: number) => Promise<any>
+      }
+
+      // Cross-tab context (Session C)
+      context: {
+        getState: () => Promise<PickerState>
+        extract: (selection: ContextSelection, options?: { force?: boolean; selectedTextByTab?: Record<string, string> }) => Promise<ExtractionBatchResult>
+        preview: (question: string, tabIds?: string[], maxChunks?: number) => Promise<PreviewResult>
+        ask: (payloadHash: string) => Promise<QAAnswer>
+        setExclusions: (hosts: string[]) => Promise<PickerState>
+        setPrivateSession: (enabled: boolean) => Promise<PickerState>
+        clearPrivate: () => Promise<PickerState>
+        clear: () => Promise<PickerState>
+        removeItem: (itemId: string) => Promise<PickerState>
+        removeTab: (tabId: string) => Promise<PickerState>
+        getItemText: (itemId: string) => Promise<{ id: string; text: string; selectedText?: string } | null>
+        screenshot: (tabId: string) => Promise<{
+          dataUrl: string
+          url: string
+          title: string
+          width: number
+          height: number
+          isPrivate: boolean
+          timestamp: number
+        } | null>
+        markTabPrivate: (tabId: string, isPrivate: boolean) => Promise<PickerState>
       }
 
       on: (channel: string, callback: (...args: any[]) => void) => () => void

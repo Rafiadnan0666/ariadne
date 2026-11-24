@@ -1,15 +1,16 @@
 {
   "name": "ariadne-browser",
   "version": "1.0.0",
-  "main": "dist/main.js",
+  "main": "dist/main/index.js",
   "type": "commonjs",
   "scripts": {
     "dev": "npm run build:electron && electron .",
     "build": "tsc && vite build",
     "start": "electron .",
-    "build:electron": "tsc --project tsconfig.main.json",
+    "build:electron": "tsc --project tsconfig.main.json && node scripts/copy-assets.js",
     "build:renderer": "vite build",
-    "build:preload": "tsc --project tsconfig.preload.json"
+    "build:preload": "tsc --project tsconfig.preload.json",
+    "test": "tsc --project tsconfig.tests.json && node --test dist-tests/tests/pipeline.test.js"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.13.0",
