@@ -78,10 +78,7 @@ app.whenReady().then(async () => {
   // Tab IPC
   ipcMain.handle('tab:create', async (_e, url?: string) => {
     const id = await createTab(url)
-    const tab = getTabs().find(t => t.id === id)
-    if (tab) {
-      aiSystem.registerTab(id, 0, tab.url, tab.title, tab.isPrivate || false)
-    }
+    // Don't register with AI system yet - wait for tab:set-web-contents with real webContentsId
     return id
   })
 
@@ -135,10 +132,7 @@ app.whenReady().then(async () => {
     const tab = getTabs().find(t => t.id === id)
     if (!tab) return null
     const newId = await createTab(tab.url)
-    const newTab = getTabs().find(t => t.id === newId)
-    if (newTab) {
-      aiSystem.registerTab(newId, 0, newTab.url, newTab.title, newTab.isPrivate || false)
-    }
+    // Don't register with AI system yet - wait for tab:set-web-contents
     return newId
   })
 
