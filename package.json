@@ -14,10 +14,14 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.13.0",
+    "@types/react-dnd": "^2.0.36",
+    "@types/react-dnd-html5-backend": "^3.0.2",
     "@types/uuid": "^10.0.0",
     "electron-store": "^12.0.0",
     "keytar": "^7.9.0",
     "openai": "^7.62.0",
+    "react-dnd": "^16.0.1",
+    "react-dnd-html5-backend": "^16.0.1",
     "sqlite3": "^5.1.6",
     "tiktoken": "^1.0.22",
     "uuid": "^14.0.3"
