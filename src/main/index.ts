@@ -5,6 +5,10 @@ import * as path from 'path'
 import * as fs from 'fs'
 import Store from 'electron-store'
 
+// Disable GPU to avoid cache issues on Windows
+app.commandLine.appendSwitch('disable-gpu')
+app.commandLine.appendSwitch('disable-software-rasterizer')
+
 let mainWindow: BrowserWindow | null = null
 
 // Initialize stores
@@ -56,6 +60,12 @@ function saveDownloads(downloads: any[]): void {
 
 app.whenReady().then(async () => {
   initTabs()
+
+  // Configure session for webview partition
+  const webviewSession = session.fromPartition('persist:ariadne')
+  webviewSession.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(false)
+  })
 
   // Initialize AI system
   await aiSystem.getRegistry().initialize()
@@ -764,5 +774,3 @@ app.on('before-quit', async () => {
   globalShortcut.unregisterAll()
   await aiSystem.shutdown()
 })
-
-app.commandLine.appendSwitch('disable-gpu')
