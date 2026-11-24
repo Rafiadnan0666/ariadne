@@ -310,6 +310,124 @@ test('BM25 ranking is deterministic and prefers exact term matches', () => {
   assert.ok(rankChunks('battery', manager.listChunks(), { maxChunks: 2 }).hits.length > 0);
 });
 
+test('private aliases are stripped before anything is persisted', () => {
+  const saved: Array<{ id: string; sources: Array<{ url: string; isPrivate?: boolean }> }> = [];
+  const manager = new SessionContextManager({}, {
+    saveItem: (item) => { saved.push({ id: item.id, sources: item.sources.map((s) => ({ url: s.url, isPrivate: s.isPrivate })) }); },
+    deleteItem: () => undefined,
+    clear: () => undefined,
+  });
+
+  manager.upsertPage(page('1', 'https://public.example/widget', 'Ariadne Widget', PRICE_TEXT));
+  const privateUrl = 'https://private.example/widget-copy';
+  manager.upsertPage(page('2', privateUrl, 'Ariadne Widget copy', PRICE_TEXT, { isPrivate: true }));
+  assert.equal(manager.stats().privateItems, 0, 'alias folded into the public item');
+  assert.ok(manager.listItems()[0].sources.some((source) => source.url === privateUrl));
+
+  manager.clearPrivate();
+  const last = saved[saved.length - 1];
+  assert.ok(last, 'public item was re-persisted after alias removal');
+  assert.ok(last.sources.every((source) => source.url !== privateUrl));
+  assert.ok(last.sources.every((source) => !source.isPrivate));
+});
+
+test('applying an exclusion removes existing items and aliases', () => {
+  const manager = new SessionContextManager();
+  manager.upsertPage(page('1', 'https://public.example/widget', 'Ariadne Widget', PRICE_TEXT));
+  manager.upsertPage(page('2', 'https://secret.example/widget-copy', 'Ariadne Widget copy', PRICE_TEXT));
+  assert.ok(manager.listItems()[0].sources.some((source) => source.url.includes('secret.example')));
+
+  const removed = manager.applyExclusions(['secret.example']);
+  assert.equal(removed, 0, 'only the alias matched, not the primary item');
+  assert.equal(manager.stats().items, 1);
+  assert.ok(manager.listItems()[0].sources.every((source) => !source.url.includes('secret.example')));
+  assert.equal(manager.upsertPage(page('3', 'https://secret.example/new', 'Secret', DOC_V1_TEXT)), null);
+});
+
+test('closing an aliased tab keeps the page but drops its source', () => {
+  const manager = new SessionContextManager();
+  manager.upsertPage(page('1', 'https://public.example/widget', 'Ariadne Widget', PRICE_TEXT));
+  manager.upsertPage(page('2', 'https://mirror.example/widget', 'Ariadne Widget mirror', PRICE_TEXT));
+  assert.equal(manager.stats().items, 1);
+  assert.equal(manager.listItems()[0].sources.length, 2);
+
+  manager.removeTab('2');
+  assert.equal(manager.stats().items, 1);
+  assert.deepEqual(manager.listItems()[0].sources.map((source) => source.tabId), ['1']);
+});
+
+test('provider adapter accepts the registry chatCompletion shape', async () => {
+  const { adaptRegistryStream } = await import('../src/context/provider-adapter');
+  const seen: Array<{ model: string; messages: Array<{ role: string; content: string }> }> = [];
+  const provider = adaptRegistryStream(
+    {
+      getModelSlot: (slot) => (slot === 'research' ? 'research-model' : ''),
+      async chatCompletion(request) {
+        seen.push({ model: request.model, messages: request.messages });
+        return {
+          choices: [{ message: { role: 'assistant', content: 'The price is 42 dollars [S1].' } }],
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        };
+      },
+    },
+    { id: 'registry', name: 'Registry' }
+  );
+  const response = await provider.chat({ messages: [{ role: 'user', content: 'price?' }] });
+  assert.equal(response.text, 'The price is 42 dollars [S1].');
+  assert.equal(seen[0].model, 'research-model');
+  assert.equal(response.usage?.totalTokens, 15);
+});
+
+test('retrieval quality: five topics resolve to the correct source', () => {
+  const manager = new SessionContextManager();
+  const fixtures = [
+    page('1', 'https://shop.example/widget', 'Ariadne Widget', PRICE_TEXT),
+    page('2', 'https://docs.example/deploy', 'Deployment guide', DOC_V1_TEXT),
+    page('3', 'https://nature.example/birds', 'Bird migration', ARTICLE_TEXT),
+    page('4', 'https://shop.example/beacon', 'Beacon Widget', PRODUCT_B_TEXT),
+    page('5', 'https://docs.example/deploy-v2', 'Deployment guide v2', DOC_V2_TEXT),
+  ];
+  for (const fixture of fixtures) manager.upsertPage(fixture);
+
+  const cases: Array<[string, string]> = [
+    ['How much does the Ariadne Widget cost?', '1'],
+    ['Which Node version does the legacy deployment guide require?', '2'],
+    ['How do migratory birds navigate?', '3'],
+    ['What is the Beacon Widget warranty?', '4'],
+    ['What Node version does version two of the deployment guide require?', '5'],
+  ];
+  for (const [query, expectedTab] of cases) {
+    const result = manager.retrieve(query, { maxChunks: 2 });
+    assert.ok(result.hits.length > 0, `no hits for: ${query}`);
+    assert.equal(result.hits[0].chunk.tabId, expectedTab, `wrong source for: ${query}`);
+  }
+});
+
+test('twenty-plus tabs stay bounded and retrievable', () => {
+  const manager = new SessionContextManager({ maxItems: 30, maxChunks: 300, maxTotalChars: 80_000 });
+  const started = Date.now();
+  for (let i = 1; i <= 25; i++) {
+    manager.upsertPage(
+      page(
+        String(i),
+        `https://site${i}.example/page`,
+        `Topic ${i}`,
+        `Unique topic ${i} discusses item number ${i} and its distinctive property ${i * 7}. `.repeat(30)
+      )
+    );
+  }
+  const elapsed = Date.now() - started;
+  const stats = manager.stats();
+  assert.equal(stats.items, 25);
+  assert.ok(stats.chunks <= 300);
+  assert.ok(stats.chars <= 80_000);
+  assert.ok(elapsed < 5000, `indexing 25 tabs took ${elapsed}ms`);
+
+  const result = manager.retrieve('distinctive property 175', { maxChunks: 3 });
+  assert.ok(result.hits.length > 0);
+  assert.equal(result.hits[0].chunk.tabId, '25');
+});
+
 function fakeProvider(reply: (request: { messages: Array<{ role: string; content: string }> }) => string): ContextProvider {
   return {
     id: 'test-only-fake',
