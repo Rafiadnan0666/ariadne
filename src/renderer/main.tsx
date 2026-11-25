@@ -207,14 +207,6 @@ export default function App() {
     }
   }, [])
 
-  const refreshDownloads = useCallback(async () => {
-    try {
-      setDownloads(await window.electronAPI.downloads.get())
-    } catch (error) {
-      console.error('Failed to load downloads', error)
-    }
-  }, [])
-
   // Initial load ---------------------------------------------------------
   useEffect(() => {
     let cancelled = false

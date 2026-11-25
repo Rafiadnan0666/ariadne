@@ -181,7 +181,7 @@ export class AISystem {
     }
   }
 
-  async addProvider(config: ProviderConfig, apiKey?: string): Promise<void> {
+  async addProvider(config: ProviderConfig, apiKeys?: string[]): Promise<void> {
     const existing = this.config.providers.find(p => p.id === config.id);
     if (existing) {
       throw new Error(`Provider ${config.id} already exists`);
@@ -189,7 +189,7 @@ export class AISystem {
     this.config.providers.push(config);
     this.saveConfig(this.config);
     if (config.enabled) {
-      await this.registry.addProvider(config, apiKey);
+      await this.registry.addProvider(config, apiKeys);
     }
   }
 
@@ -199,31 +199,53 @@ export class AISystem {
     await this.registry.removeProvider(id);
   }
 
-  async testProvider(id: string, apiKey?: string): Promise<{ success: boolean; error?: string }> {
+  async testProvider(id: string, apiKeys?: string[]): Promise<{ success: boolean; error?: string }> {
     const config = this.config.providers.find(p => p.id === id);
     if (!config) return { success: false, error: 'Provider not found' };
 
     try {
-      const health = await this.registry.testProvider(config, apiKey);
+      // Test with first key if provided
+      const health = await this.registry.testProvider(config, apiKeys?.[0]);
       return { success: health.healthy, error: health.error };
     } catch (e) {
       return { success: false, error: String(e) };
     }
   }
 
-  async setApiKey(providerId: string, keyName: string, apiKey: string): Promise<void> {
-    await storeCredential(providerId, keyName, apiKey);
+  async setApiKeys(providerId: string, apiKeys: string[]): Promise<void> {
+    await this.registry.setApiKeys(providerId, apiKeys);
     const config = this.registry.getConfig(providerId);
     if (config) {
-      config.apiKeyRef = keyName;
-      if (config.enabled) {
-        await this.registry.updateProvider(config);
-      }
+      this.saveConfig(this.config);
     }
   }
 
-  getMaskedApiKey(providerId: string, keyName: string): Promise<string | null> {
-    return getCredential(providerId, keyName).then(key => key ? maskApiKey(key) : null);
+  async addApiKey(providerId: string, apiKey: string): Promise<void> {
+    await this.registry.addApiKey(providerId, apiKey);
+    const config = this.registry.getConfig(providerId);
+    if (config) {
+      this.saveConfig(this.config);
+    }
+  }
+
+  async removeApiKey(providerId: string, keyIndex: number): Promise<void> {
+    await this.registry.removeApiKey(providerId, keyIndex);
+    const config = this.registry.getConfig(providerId);
+    if (config) {
+      this.saveConfig(this.config);
+    }
+  }
+
+  getApiKeyCount(providerId: string): number {
+    return this.registry.getApiKeyCount(providerId);
+  }
+
+  getMaskedApiKeys(providerId: string): Promise<string[]> {
+    const config = this.registry.getConfig(providerId);
+    if (!config?.apiKeyRefs) return Promise.resolve([]);
+    return Promise.all(config.apiKeyRefs.map(ref => 
+      getCredential(providerId, ref).then(key => key ? maskApiKey(key) : '********')
+    ));
   }
 
   getSystemPrompt(): string {

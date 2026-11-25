@@ -21,9 +21,14 @@ export class LMStudioProvider extends BaseProvider {
   }
 
   protected getAuthHeaders(): Record<string, string> {
-    return {
-      'Content-Type': 'application/json',
-    };
+    const key = this.getCurrentApiKey();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers.Authorization = `Bearer ${key}`;
+    return headers;
+  }
+
+  async rotateKey(): Promise<boolean> {
+    return this.rotateApiKey();
   }
 
   protected transformRequest(request: ChatCompletionRequest): Record<string, unknown> {

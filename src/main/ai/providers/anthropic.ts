@@ -26,9 +26,10 @@ export class AnthropicProvider extends BaseProvider {
 
   async initialize(): Promise<void> {
     await super.initialize();
-    if (this.apiKey) {
+    const key = this.getCurrentApiKey();
+    if (key) {
       this.client = new Anthropic({
-        apiKey: this.apiKey,
+        apiKey: key,
         baseURL: this.config.baseUrl || undefined,
         dangerouslyAllowBrowser: false,
       });
@@ -40,11 +41,27 @@ export class AnthropicProvider extends BaseProvider {
   }
 
   protected getAuthHeaders(): Record<string, string> {
+    const key = this.getCurrentApiKey();
     return {
-      'x-api-key': this.apiKey || '',
+      'x-api-key': key || '',
       'Content-Type': 'application/json',
       'anthropic-version': '2023-06-01',
     };
+  }
+
+  async rotateKey(): Promise<boolean> {
+    const rotated = this.rotateApiKey();
+    if (rotated) {
+      const key = this.getCurrentApiKey();
+      if (key) {
+        this.client = new Anthropic({
+          apiKey: key,
+          baseURL: this.config.baseUrl || undefined,
+          dangerouslyAllowBrowser: false,
+        });
+      }
+    }
+    return rotated;
   }
 
   protected transformRequest(request: ChatCompletionRequest): Record<string, unknown> {

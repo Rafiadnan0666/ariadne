@@ -12,7 +12,7 @@ import {
   ModelCapability,
   RequestMetadata,
 } from './types';
-import { ProviderAdapter, StreamCallback } from './provider';
+import { ProviderAdapter, StreamCallback, BaseProvider } from './provider';
 import { createProvider, PROVIDER_TYPES, getDefaultConfig } from './providers';
 import { storeCredential, getCredential, deleteCredential, listCredentials, maskApiKey } from './credentials';
 import * as path from 'path';
@@ -21,6 +21,15 @@ import { app } from 'electron';
 
 const REGISTRY_FILE = 'ai-providers.json';
 const USAGE_FILE = 'ai-usage.json';
+
+// Track active request context for fallback
+interface ActiveRequestContext {
+  request: ChatCompletionRequest;
+  originalProviderId: string;
+  originalModelId: string;
+  attemptCount: number;
+  startTime: number;
+}
 
 export class ProviderRegistry {
   private providers = new Map<string, ProviderAdapter>();
@@ -35,6 +44,8 @@ export class ProviderRegistry {
   private usageHistory: ProviderUsage[] = [];
   private healthCache = new Map<string, ProviderHealth>();
   private initialized = false;
+  private activeRequestContext: ActiveRequestContext | null = null;
+  private keyRotationIndex = new Map<string, number>(); // providerId -> current key index
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
@@ -100,16 +111,30 @@ export class ProviderRegistry {
     fs.writeFileSync(usagePath, JSON.stringify({ history: this.usageHistory }, null, 2));
   }
 
-  async addProvider(config: ProviderConfig, apiKey?: string): Promise<void> {
+  async addProvider(config: ProviderConfig, apiKeys?: string[]): Promise<void> {
     if (this.configs.has(config.id)) {
       throw new Error(`Provider ${config.id} already exists`);
     }
 
-    if (apiKey && config.apiKeyRef) {
-      await storeCredential(config.id, config.apiKeyRef, apiKey);
+    const keyRefs: string[] = [];
+    if (apiKeys && apiKeys.length > 0) {
+      for (let i = 0; i < apiKeys.length; i++) {
+        const keyName = `key-${i + 1}`;
+        await storeCredential(config.id, keyName, apiKeys[i]);
+        keyRefs.push(keyName);
+      }
+    } else if (config.apiKeyRefs && config.apiKeyRefs.length > 0) {
+      // Keys already stored
     }
 
-    const mergedConfig = { ...getDefaultConfig(config.type), ...config } as ProviderConfig;
+    const mergedConfig = { 
+      ...getDefaultConfig(config.type), 
+      ...config,
+      apiKeyRefs: keyRefs.length > 0 ? keyRefs : config.apiKeyRefs,
+      fallbackPriority: config.fallbackPriority ?? 10,
+      maxRetries: config.maxRetries ?? 2,
+      healthCheckInterval: config.healthCheckInterval ?? 300000,
+    } as ProviderConfig;
     this.configs.set(config.id, mergedConfig);
 
     if (mergedConfig.enabled) {
@@ -119,16 +144,27 @@ export class ProviderRegistry {
     await this.saveConfigs();
   }
 
-  async updateProvider(config: ProviderConfig, apiKey?: string): Promise<void> {
+  async updateProvider(config: ProviderConfig, apiKeys?: string[]): Promise<void> {
     const existing = this.configs.get(config.id);
     if (!existing) throw new Error(`Provider ${config.id} not found`);
 
-    if (apiKey && config.apiKeyRef) {
-      await storeCredential(config.id, config.apiKeyRef, apiKey);
+    const keyRefs = existing.apiKeyRefs || [];
+    if (apiKeys && apiKeys.length > 0) {
+      // Add new keys
+      for (let i = 0; i < apiKeys.length; i++) {
+        const keyName = `key-${keyRefs.length + i + 1}`;
+        await storeCredential(config.id, keyName, apiKeys[i]);
+        keyRefs.push(keyName);
+      }
     }
 
     const wasEnabled = existing.enabled;
-    const mergedConfig = { ...existing, ...config, ...getDefaultConfig(config.type) } as ProviderConfig;
+    const mergedConfig = { 
+      ...existing, 
+      ...config, 
+      ...getDefaultConfig(config.type),
+      apiKeyRefs: keyRefs,
+    } as ProviderConfig;
     this.configs.set(config.id, mergedConfig);
 
     if (wasEnabled && !mergedConfig.enabled) {
@@ -145,25 +181,93 @@ export class ProviderRegistry {
   async removeProvider(id: string): Promise<void> {
     await this.stopProvider(id);
     const config = this.configs.get(id);
-    if (config?.apiKeyRef) {
+    if (config?.apiKeyRefs) {
+      for (const keyRef of config.apiKeyRefs) {
+        await deleteCredential(id, keyRef);
+      }
+    } else if (config?.apiKeyRef) {
+      // Legacy single key
       await deleteCredential(id, config.apiKeyRef);
     }
     this.configs.delete(id);
     this.healthCache.delete(id);
+    this.keyRotationIndex.delete(id);
     await this.saveConfigs();
   }
 
-  async setApiKey(providerId: string, keyName: string, apiKey: string): Promise<void> {
+  async setApiKeys(providerId: string, apiKeys: string[]): Promise<void> {
     const config = this.configs.get(providerId);
     if (!config) throw new Error(`Provider ${providerId} not found`);
 
-    await storeCredential(providerId, keyName, apiKey);
-    config.apiKeyRef = keyName;
+    // Clear old keys
+    if (config.apiKeyRefs) {
+      for (const keyRef of config.apiKeyRefs) {
+        await deleteCredential(providerId, keyRef);
+      }
+    } else if (config.apiKeyRef) {
+      await deleteCredential(providerId, config.apiKeyRef);
+    }
+
+    // Store new keys
+    const keyRefs: string[] = [];
+    for (let i = 0; i < apiKeys.length; i++) {
+      const keyName = `key-${i + 1}`;
+      await storeCredential(providerId, keyName, apiKeys[i]);
+      keyRefs.push(keyName);
+    }
+
+    config.apiKeyRefs = keyRefs;
+    this.keyRotationIndex.set(providerId, 0);
     await this.saveConfigs();
 
     if (config.enabled) {
       await this.restartProvider(config);
     }
+  }
+
+  async addApiKey(providerId: string, apiKey: string): Promise<void> {
+    const config = this.configs.get(providerId);
+    if (!config) throw new Error(`Provider ${providerId} not found`);
+
+    const keyRefs = config.apiKeyRefs || [];
+    const keyName = `key-${keyRefs.length + 1}`;
+    await storeCredential(providerId, keyName, apiKey);
+    keyRefs.push(keyName);
+
+    config.apiKeyRefs = keyRefs;
+    await this.saveConfigs();
+
+    if (config.enabled) {
+      await this.restartProvider(config);
+    }
+  }
+
+  async removeApiKey(providerId: string, keyIndex: number): Promise<void> {
+    const config = this.configs.get(providerId);
+    if (!config || !config.apiKeyRefs || keyIndex >= config.apiKeyRefs.length) {
+      throw new Error(`Invalid key index`);
+    }
+
+    const keyRef = config.apiKeyRefs[keyIndex];
+    await deleteCredential(providerId, keyRef);
+    config.apiKeyRefs.splice(keyIndex, 1);
+    
+    // Adjust rotation index
+    const currentIndex = this.keyRotationIndex.get(providerId) || 0;
+    if (currentIndex >= config.apiKeyRefs.length && config.apiKeyRefs.length > 0) {
+      this.keyRotationIndex.set(providerId, 0);
+    }
+    
+    await this.saveConfigs();
+
+    if (config.enabled) {
+      await this.restartProvider(config);
+    }
+  }
+
+  getApiKeyCount(providerId: string): number {
+    const config = this.configs.get(providerId);
+    return config?.apiKeyRefs?.length || 0;
   }
 
   async testProvider(config: ProviderConfig, apiKey?: string): Promise<ProviderHealth> {
@@ -277,6 +381,79 @@ export class ProviderRegistry {
     return null;
   }
 
+  // Error classification for retry/fallback decisions
+  private classifyError(error: unknown): { retryable: boolean; fallbackable: boolean; rotatable: boolean } {
+    const msg = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase();
+    
+    // Rate limits, quotas, server errors -> retryable, fallbackable, rotatable
+    if (msg.includes('rate limit') || msg.includes('429') || msg.includes('quota exceeded') || 
+        msg.includes('503') || msg.includes('502') || msg.includes('504') || msg.includes('server error')) {
+      return { retryable: true, fallbackable: true, rotatable: true };
+    }
+    
+    // Auth errors -> fallbackable, rotatable (try next key)
+    if (msg.includes('401') || msg.includes('403') || msg.includes('unauthorized') || 
+        msg.includes('forbidden') || msg.includes('invalid api key') || msg.includes('authentication')) {
+      return { retryable: false, fallbackable: true, rotatable: true };
+    }
+    
+    // Network errors -> retryable
+    if (msg.includes('timeout') || msg.includes('network') || msg.includes('econnreset') || 
+        msg.includes('etimedout') || msg.includes('socket')) {
+      return { retryable: true, fallbackable: true, rotatable: false };
+    }
+    
+    // Model not found, context length -> fallbackable (different model/provider)
+    if (msg.includes('model not found') || msg.includes('context length') || msg.includes('max tokens')) {
+      return { retryable: false, fallbackable: true, rotatable: false };
+    }
+    
+    // Unknown -> retryable once, fallbackable
+    return { retryable: true, fallbackable: true, rotatable: false };
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  private async executeWithRetry(
+    provider: ProviderAdapter,
+    request: ChatCompletionRequest,
+    config: ProviderConfig,
+    model: ModelMetadata,
+    startTime: number,
+    attempt: number = 0
+  ): Promise<ChatCompletionResponse> {
+    const maxRetries = config.maxRetries ?? 2;
+    
+    try {
+      const response = await provider.chatCompletion(request);
+      this.recordUsage(provider.config.id, request.model, response.usage, model, Date.now() - startTime);
+      return response;
+    } catch (error) {
+      const classification = this.classifyError(error);
+      
+      // Try key rotation first if rotatable
+      if (classification.rotatable && provider instanceof BaseProvider) {
+        const rotated = await provider.rotateApiKey();
+        if (rotated) {
+          console.log(`Rotated API key for ${provider.config.id}, retrying...`);
+          return this.executeWithRetry(provider, request, config, model, startTime, attempt);
+        }
+      }
+      
+      // Retry with backoff
+      if (classification.retryable && attempt < maxRetries) {
+        const backoffMs = Math.min(1000 * Math.pow(2, attempt), 10000);
+        console.log(`Retrying ${provider.config.id} in ${backoffMs}ms (attempt ${attempt + 1}/${maxRetries})`);
+        await this.sleep(backoffMs);
+        return this.executeWithRetry(provider, request, config, model, startTime, attempt + 1);
+      }
+      
+      throw error;
+    }
+  }
+
   async chatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse> {
     const modelId = request.model;
     const result = await this.getModelById(modelId);
@@ -285,12 +462,21 @@ export class ProviderRegistry {
     const { provider, model } = result;
     const startTime = Date.now();
 
+    // Track context for fallback
+    this.activeRequestContext = {
+      request,
+      originalProviderId: provider.config.id,
+      originalModelId: modelId,
+      attemptCount: 0,
+      startTime,
+    };
+
     try {
-      const response = await provider.chatCompletion(request);
-      this.recordUsage(provider.config.id, modelId, response.usage, model, Date.now() - startTime);
-      return response;
+      return await this.executeWithRetry(provider, request, provider.config, model, startTime);
     } catch (error) {
       return this.handleErrorAndFallback(error, request, modelId, startTime);
+    } finally {
+      this.activeRequestContext = null;
     }
   }
 
@@ -306,6 +492,14 @@ export class ProviderRegistry {
     const startTime = Date.now();
     let accumulatedUsage: TokenUsage | undefined;
     let finishReason = 'stop';
+
+    this.activeRequestContext = {
+      request,
+      originalProviderId: provider.config.id,
+      originalModelId: modelId,
+      attemptCount: 0,
+      startTime,
+    };
 
     try {
       await provider.chatCompletionStream(request, (chunk) => {
@@ -326,9 +520,12 @@ export class ProviderRegistry {
       };
     } catch (error) {
       if (error instanceof Error && error.message === 'CANCELLED') throw error;
+      
+      // For streaming fallback, we'd need to re-stream - simplified: fall back to non-streaming
       const fallbackResponse = await this.handleErrorAndFallback(error, request, modelId, startTime);
-      // For streaming fallback, we'd need to re-stream - simplified for now
       return fallbackResponse;
+    } finally {
+      this.activeRequestContext = null;
     }
   }
 
@@ -348,10 +545,13 @@ export class ProviderRegistry {
     const originalResult = await this.getModelById(originalModelId);
     const originalProviderId = originalResult?.provider.config.id;
 
-    // Find fallback providers that user explicitly allowed
-    const fallbackConfigs = Array.from(this.configs.values()).filter(
-      (c) => c.enabled && c.allowedFallback && c.id !== originalProviderId
-    );
+    // Get fallback providers sorted by priority
+    const fallbackConfigs = Array.from(this.configs.values())
+      .filter((c) => c.enabled && c.allowedFallback && c.id !== originalProviderId)
+      .sort((a, b) => (a.fallbackPriority ?? 10) - (b.fallbackPriority ?? 10));
+
+    // Preserve conversation context for fallback
+    const fallbackRequest = { ...request };
 
     for (const fallbackConfig of fallbackConfigs) {
       const fallbackProvider = this.providers.get(fallbackConfig.id);
@@ -364,11 +564,15 @@ export class ProviderRegistry {
       if (!fallbackModelId) continue;
 
       try {
-        const fallbackRequest = { ...request, model: fallbackModelId };
-        const response = await fallbackProvider.chatCompletion(fallbackRequest);
         const modelMeta = typeof fallbackModel === 'string' ? fallbackConfig.models[0] : fallbackModel;
-        this.recordUsage(fallbackConfig.id, fallbackModelId, response.usage, modelMeta, Date.now() - startTime);
-        console.warn(`Fell back from ${originalProviderId} to ${fallbackConfig.id}:`, error);
+        const response = await this.executeWithRetry(
+          fallbackProvider, 
+          { ...fallbackRequest, model: fallbackModelId }, 
+          fallbackConfig, 
+          modelMeta as ModelMetadata, 
+          startTime
+        );
+        console.warn(`Fell back from ${originalProviderId} to ${fallbackConfig.id} (model: ${fallbackModelId}):`, error);
         return response;
       } catch (fallbackError) {
         console.error(`Fallback to ${fallbackConfig.id} also failed:`, fallbackError);

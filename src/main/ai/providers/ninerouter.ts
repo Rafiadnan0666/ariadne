@@ -21,10 +21,15 @@ export class NineRouterProvider extends BaseProvider {
   }
 
   protected getAuthHeaders(): Record<string, string> {
+    const key = this.getCurrentApiKey();
     return {
-      Authorization: `Bearer ${this.apiKey}`,
+      Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
     };
+  }
+
+  async rotateKey(): Promise<boolean> {
+    return this.rotateApiKey();
   }
 
   protected transformRequest(request: ChatCompletionRequest): Record<string, unknown> {

@@ -34,12 +34,16 @@ export interface ProviderConfig {
   name: string;
   type: ProviderType;
   baseUrl?: string;
-  apiKeyRef?: string; // reference to keytar entry
+  apiKeyRefs?: string[]; // multiple API keys for rotation/fallback
+  apiKeyRef?: string; // deprecated: single key ref
   enabled: boolean;
   models: ModelMetadata[];
   defaultModel?: string;
   timeout?: number; // ms
   allowedFallback?: boolean; // user explicitly allows fallback to this provider
+  fallbackPriority?: number; // lower = higher priority for fallback
+  maxRetries?: number; // retries before fallback
+  healthCheckInterval?: number; // ms
 }
 
 export interface ChatMessage {

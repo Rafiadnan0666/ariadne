@@ -33,10 +33,15 @@ export class CustomProvider extends BaseProvider {
   }
 
   protected getAuthHeaders(): Record<string, string> {
+    const key = this.getCurrentApiKey();
     if (this.customConfig.authHeaderBuilder) {
-      return this.customConfig.authHeaderBuilder(this.apiKey);
+      return this.customConfig.authHeaderBuilder(key);
     }
-    return this.apiKey ? { Authorization: `Bearer ${this.apiKey}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+    return key ? { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' } : { 'Content-Type': 'application/json' };
+  }
+
+  async rotateKey(): Promise<boolean> {
+    return this.rotateApiKey();
   }
 
   protected transformRequest(request: ChatCompletionRequest): Record<string, unknown> {

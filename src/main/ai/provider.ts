@@ -37,7 +37,8 @@ export interface ProviderAdapter {
 
 export abstract class BaseProvider implements ProviderAdapter {
   readonly config: ProviderConfig;
-  protected apiKey: string | null = null;
+  protected apiKeys: string[] = [];
+  protected currentKeyIndex = 0;
   protected abortController: AbortController | null = null;
   private abortReason: 'timeout' | 'cancelled' | null = null;
 
@@ -46,12 +47,29 @@ export abstract class BaseProvider implements ProviderAdapter {
   }
 
   async initialize(): Promise<void> {
-    if (this.config.apiKeyRef) {
-      this.apiKey = await getCredential(this.config.id, this.config.apiKeyRef);
-      if (!this.apiKey) {
-        throw new Error(`API key not found for provider ${this.config.id} (ref: ${this.config.apiKeyRef})`);
-      }
+    const keyRefs = this.config.apiKeyRefs || (this.config.apiKeyRef ? [this.config.apiKeyRef] : []);
+    for (const keyRef of keyRefs) {
+      const key = await getCredential(this.config.id, keyRef);
+      if (key) this.apiKeys.push(key);
     }
+    if (this.apiKeys.length === 0 && keyRefs.length > 0) {
+      throw new Error(`No API keys found for provider ${this.config.id}`);
+    }
+  }
+
+  getCurrentApiKey(): string | null {
+    if (this.apiKeys.length === 0) return null;
+    return this.apiKeys[this.currentKeyIndex];
+  }
+
+  rotateApiKey(): boolean {
+    if (this.apiKeys.length <= 1) return false;
+    this.currentKeyIndex = (this.currentKeyIndex + 1) % this.apiKeys.length;
+    return true;
+  }
+
+  getApiKeyCount(): number {
+    return this.apiKeys.length;
   }
 
   async shutdown(): Promise<void> {

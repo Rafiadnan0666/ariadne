@@ -26,9 +26,10 @@ export class OpenAIProvider extends BaseProvider {
 
   async initialize(): Promise<void> {
     await super.initialize();
-    if (this.apiKey) {
+    const key = this.getCurrentApiKey();
+    if (key) {
       this.client = new OpenAI({
-        apiKey: this.apiKey,
+        apiKey: key,
         baseURL: this.config.baseUrl || undefined,
         dangerouslyAllowBrowser: false,
       });
@@ -40,10 +41,26 @@ export class OpenAIProvider extends BaseProvider {
   }
 
   protected getAuthHeaders(): Record<string, string> {
+    const key = this.getCurrentApiKey();
     return {
-      Authorization: `Bearer ${this.apiKey}`,
+      Authorization: `Bearer ${key}`,
       'Content-Type': 'application/json',
     };
+  }
+
+  async rotateKey(): Promise<boolean> {
+    const rotated = this.rotateApiKey();
+    if (rotated) {
+      const key = this.getCurrentApiKey();
+      if (key) {
+        this.client = new OpenAI({
+          apiKey: key,
+          baseURL: this.config.baseUrl || undefined,
+          dangerouslyAllowBrowser: false,
+        });
+      }
+    }
+    return rotated;
   }
 
   protected transformRequest(request: ChatCompletionRequest): Record<string, unknown> {

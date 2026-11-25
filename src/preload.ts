@@ -111,13 +111,19 @@ const ai = {
   getConfig: () => invoke<any>('ai:config:get'),
   updateConfig: (updates: any) => invoke<any>('ai:config:update', updates),
   getProviders: () => invoke<any[]>('ai:providers:list'),
-  addProvider: (config: any, apiKey?: string) => invoke<any>('ai:provider:add', config, apiKey),
+  addProvider: (config: any, apiKeys?: string[]) => invoke<any>('ai:provider:add', config, apiKeys),
   removeProvider: (id: string) => invoke<any>('ai:provider:remove', id),
-  testProvider: (id: string, apiKey?: string) => invoke<{ success: boolean; error?: string }>('ai:provider:test', id, apiKey),
-  setApiKey: (providerId: string, keyName: string, apiKey: string) =>
-    invoke<any>('ai:provider:set-key', providerId, keyName, apiKey),
-  getMaskedKey: (providerId: string, keyName: string) =>
-    invoke<string | null>('ai:provider:get-masked-key', providerId, keyName),
+  testProvider: (id: string, apiKeys?: string[]) => invoke<{ success: boolean; error?: string }>('ai:provider:test', id, apiKeys),
+  setApiKeys: (providerId: string, apiKeys: string[]) =>
+    invoke<any>('ai:provider:set-keys', providerId, apiKeys),
+  addApiKey: (providerId: string, apiKey: string) =>
+    invoke<any>('ai:provider:add-key', providerId, apiKey),
+  removeApiKey: (providerId: string, keyIndex: number) =>
+    invoke<any>('ai:provider:remove-key', providerId, keyIndex),
+  getMaskedKeys: (providerId: string) =>
+    invoke<string[]>('ai:provider:get-masked-keys', providerId),
+  getKeyCount: (providerId: string) =>
+    invoke<number>('ai:provider:key-count', providerId),
   getModels: () => invoke<any[]>('ai:models:list'),
   getModelsForProvider: (providerId: string) => invoke<any[]>('ai:models:for-provider', providerId),
   getModelSlots: () => invoke<Record<string, string>>('ai:model-slot:get-all'),
