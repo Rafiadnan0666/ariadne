@@ -1,776 +1,1009 @@
-import { app, ipcMain, BrowserWindow, webContents, session, shell, dialog, globalShortcut } from 'electron'
-import { init as initTabs, createTab, closeTab, setActiveTab, setUrl, getHistory, addHistory, getTabs, setTabWebContents, setTabTitle, TabState, duplicateTab, pinTab, muteTab, reopenClosedTab, getClosedTabs, setTabZoom, getTabZoom, findInPage, stopFinding, printTab, viewSource, fullscreenTab, reorderTab } from './tabs'
-import { aiSystem } from './ai'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  IpcMainInvokeEvent,
+  session,
+  Session,
+  shell,
+  webContents,
+} from 'electron'
 import * as path from 'path'
-import * as fs from 'fs'
 import Store from 'electron-store'
+import { randomUUID } from 'crypto'
+import {
+  init as initTabs,
+  closeDatabase,
+  createTab,
+  closeTab,
+  setActiveTab,
+  setUrl,
+  addHistory,
+  getHistory,
+  deleteHistoryEntry,
+  clearHistory,
+  getTabs,
+  getTabById,
+  setTabWebContents,
+  setTabTitle,
+  setTabFavicon,
+  setTabLoading,
+  setTabNavState,
+  updateTab,
+  duplicateTab,
+  pinTab,
+  muteTab,
+  reopenClosedTab,
+  getClosedTabs,
+  setTabZoom,
+  findInPage,
+  stopFinding,
+  printTab,
+  reorderTab,
+  closeTabsForWindow,
+  type TabState,
+} from './tabs'
+import { aiSystem } from './ai'
+import { contextService } from './context/service'
+import { downloadManager, type DownloadRecord } from './downloads'
+import {
+  initPermissions,
+  configureSessionPermissions,
+  respondToPermission,
+  clearPermissionDecisions,
+  denyPendingForWindow,
+  getPermissionDecisions,
+} from './permissions'
+import { installApplicationMenu, type ShortcutAction } from './menu'
+import { SEARCH_ENGINES } from '../shared/search-engines'
 
-// Disable GPU to avoid cache issues on Windows
-app.commandLine.appendSwitch('disable-gpu')
-app.commandLine.appendSwitch('disable-software-rasterizer')
+interface AppSettings {
+  theme: 'dark' | 'light' | 'system'
+  accentColor: string
+  density: 'compact' | 'normal' | 'comfortable'
+  showBookmarksBar: boolean
+  homePage: string
+  defaultSearchEngine: string
+  searchSuggestions: boolean
+  doNotTrack: boolean
+  clearOnExit: boolean
+  downloadPath: string
+  aiSidebarOpen: boolean
+}
 
-let mainWindow: BrowserWindow | null = null
+interface WindowState {
+  id: number
+  window: BrowserWindow
+  isPrivate: boolean
+  partition: string
+}
 
-// Initialize stores
-const bookmarksStore = new Store({ name: 'bookmarks' }) as any
-const downloadsStore = new Store({ name: 'downloads' }) as any
-const settingsStore = new Store({ name: 'settings' }) as any
+const settingsStore = new Store({ name: 'settings' }) as unknown as {
+  get(key: string): unknown
+  set(key: string, value: unknown): void
+}
+const bookmarksStore = new Store({ name: 'bookmarks' }) as unknown as {
+  get(key: string): unknown
+  set(key: string, value: unknown): void
+}
 
-// Initialize default settings
-const DEFAULT_SETTINGS = {
+const DEFAULT_SETTINGS: AppSettings = {
   theme: 'dark',
-  accentColor: '#4285f4',
+  accentColor: '#7aa2f7',
   density: 'normal',
   showBookmarksBar: true,
-  homePage: 'https://example.com',
+  homePage: 'about:blank',
   defaultSearchEngine: 'google',
   searchSuggestions: true,
-  clearOnExit: false,
   doNotTrack: true,
-  blockThirdPartyCookies: false,
-  hardwareAcceleration: true,
+  clearOnExit: false,
+  downloadPath: '',
+  aiSidebarOpen: false,
 }
 
-function getSettings(): any {
+const windows = new Map<number, WindowState>()
+const configuredSessions = new Set<string>()
+const tabContents = new Map<number, string>()
+const privatePartitions = new Set<string>()
+let quitting = false
+
+function getSettings(): AppSettings {
   const stored = settingsStore.get('settings')
-  return { ...DEFAULT_SETTINGS, ...stored }
+  const merged = { ...DEFAULT_SETTINGS, ...(stored && typeof stored === 'object' ? stored : {}) } as AppSettings
+  if (!merged.downloadPath) {
+    try {
+      merged.downloadPath = app.getPath('downloads')
+    } catch {
+      merged.downloadPath = ''
+    }
+  }
+  return merged
 }
 
-function saveSettings(settings: any): void {
-  settingsStore.set('settings', settings)
+function saveSettings(patch: Partial<AppSettings>): AppSettings {
+  const current = getSettings()
+  const next: AppSettings = { ...current }
+  for (const [key, value] of Object.entries(patch)) {
+    if (!(key in DEFAULT_SETTINGS)) continue
+    const expected = typeof DEFAULT_SETTINGS[key as keyof AppSettings]
+    if (typeof value !== expected) continue
+    ;(next as unknown as Record<string, unknown>)[key] = value
+  }
+  settingsStore.set('settings', next)
+  applySettings(next)
+  broadcast('settings-updated', next)
+  return next
 }
 
-// Bookmarks helpers
-function getBookmarks(): any[] {
-  return bookmarksStore.get('bookmarks') || []
+function applyDnt(ses: Session, enabled: boolean): void {
+  ses.webRequest.onBeforeSendHeaders((details, callback) => {
+    if (enabled) details.requestHeaders['DNT'] = '1'
+    callback({ requestHeaders: details.requestHeaders })
+  })
 }
 
-function saveBookmarks(bookmarks: any[]): void {
-  bookmarksStore.set('bookmarks', bookmarks)
+function applySettings(settings: AppSettings): void {
+  if (settings.downloadPath) downloadManager.setDirectory(settings.downloadPath)
+  for (const state of windows.values()) {
+    try {
+      const ses = session.fromPartition(state.partition)
+      applyDnt(ses, settings.doNotTrack)
+    } catch {
+      // Session may already be destroyed during shutdown.
+    }
+  }
 }
 
-// Downloads helpers
-function getDownloads(): any[] {
-  return downloadsStore.get('downloads') || []
+function configureSession(ses: Session, isPrivate: boolean, partition: string): void {
+  const key = `${partition}|${isPrivate}`
+  if (configuredSessions.has(key)) return
+  configuredSessions.add(key)
+  configureSessionPermissions(ses, (windowId) => windows.get(windowId)?.isPrivate === true)
+  downloadManager.attach(ses, isPrivate)
+  applyDnt(ses, getSettings().doNotTrack)
 }
 
-function saveDownloads(downloads: any[]): void {
-  downloadsStore.set('downloads', downloads)
+function serializeTab(tab: TabState): Record<string, unknown> {
+  return {
+    id: tab.id,
+    url: tab.url,
+    title: tab.title,
+    active: tab.active,
+    isPrivate: tab.isPrivate === true,
+    pinned: tab.pinned === true,
+    muted: tab.muted === true,
+    loading: tab.loading === true,
+    favicon: tab.favicon,
+    zoomFactor: tab.zoomFactor ?? 1,
+    canGoBack: tab.canGoBack === true,
+    canGoForward: tab.canGoForward === true,
+    crashed: tab.crashed === true,
+    audioPlaying: tab.audioPlaying === true,
+  }
 }
 
-app.whenReady().then(async () => {
-  initTabs()
+function sendToWindow(windowId: number | undefined, channel: string, payload?: unknown): void {
+  if (windowId === undefined) return
+  const state = windows.get(windowId)
+  if (!state || state.window.isDestroyed()) return
+  state.window.webContents.send(channel, payload)
+}
 
-  // Configure session for webview partition
-  const webviewSession = session.fromPartition('persist:ariadne')
-  webviewSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    callback(false)
+function broadcast(channel: string, payload?: unknown): void {
+  for (const state of windows.values()) {
+    if (!state.window.isDestroyed()) state.window.webContents.send(channel, payload)
+  }
+}
+
+function sendTabs(windowId: number): void {
+  sendToWindow(windowId, 'tabs-updated', getTabs(windowId).map(serializeTab))
+}
+
+function sendTab(tab: TabState): void {
+  sendToWindow(tab.windowId, 'tab-updated', serializeTab(tab))
+}
+
+function ownerWindow(event: IpcMainInvokeEvent): WindowState {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  const state = window ? windows.get(window.id) : undefined
+  if (!state) throw new Error('IPC sender is not an Ariadne window')
+  return state
+}
+
+function isTrustedSender(event: IpcMainInvokeEvent): boolean {
+  const window = BrowserWindow.fromWebContents(event.sender)
+  if (!window) return false
+  if (!windows.has(window.id)) return false
+  const url = event.senderFrame?.url || event.sender.getURL()
+  return url.startsWith('file://') && url.includes('index.html')
+}
+
+function handle(channel: string, listener: (event: IpcMainInvokeEvent, ...args: any[]) => unknown): void {
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!isTrustedSender(event)) throw new Error(`Blocked IPC call on ${channel} from an untrusted frame`)
+    return listener(event, ...args)
+  })
+}
+
+function tabForEvent(event: IpcMainInvokeEvent, tabId: string): TabState {
+  const state = ownerWindow(event)
+  const tab = getTabById(tabId)
+  if (!tab || tab.windowId !== state.id) throw new Error('Unknown tab for this window')
+  return tab
+}
+
+function contentsForTab(tabId: string): Electron.WebContents | null {
+  const tab = getTabById(tabId)
+  if (!tab?.webContentsId) return null
+  const contents = webContents.fromId(tab.webContentsId)
+  if (!contents || contents.isDestroyed()) return null
+  return contents
+}
+
+function isAllowedGuestUrl(raw: string): boolean {
+  if (raw === 'about:blank') return true
+  try {
+    const url = new URL(raw)
+    return url.protocol === 'http:' || url.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
+function updateNavigationState(tabId: string, contents: Electron.WebContents): void {
+  setTabNavState(tabId, contents.canGoBack(), contents.canGoForward())
+}
+
+function recordNavigation(tab: TabState): void {
+  if (!tab.isPrivate) {
+    void addHistory(tab.url, tab.title).catch((error) => console.error('Failed to write history:', error))
+  }
+}
+
+function attachTabEvents(tabId: string, contents: Electron.WebContents): void {
+  if (tabContents.get(contents.id) === tabId) return
+  tabContents.set(contents.id, tabId)
+
+  const refresh = (options: { history?: boolean; title?: boolean } = {}): void => {
+    const tab = getTabById(tabId)
+    if (!tab) return
+    if (options.title) tab.title = contents.getTitle() || tab.title
+    updateNavigationState(tabId, contents)
+    if (options.history) recordNavigation(tab)
+    aiSystem.updateTab(tabId, tab.url, tab.title)
+    sendTab(tab)
+  }
+
+  contents.on('did-start-loading', () => {
+    setTabLoading(tabId, true)
+    const tab = getTabById(tabId)
+    if (tab) sendTab(tab)
   })
 
-  // Initialize AI system
-  await aiSystem.getRegistry().initialize()
-
-  // Core app IPC
-  ipcMain.handle('app:ready', async () => {
-    return { version: app.getVersion(), platform: process.platform }
+  contents.on('did-stop-loading', () => {
+    setTabLoading(tabId, false)
+    refresh({ title: true })
   })
 
-  // Settings IPC
-  ipcMain.handle('settings:get', async () => {
-    return getSettings()
+  contents.on('did-navigate', (_event, url) => {
+    const tab = getTabById(tabId)
+    if (!tab) return
+    setUrl(tabId, url)
+    refresh({ title: true, history: true })
   })
 
-  ipcMain.handle('settings:set', async (_e, settings: any) => {
-    saveSettings(settings)
-    return getSettings()
+  contents.on('did-navigate-in-page', (_event, url, isMainFrame) => {
+    if (!isMainFrame) return
+    const tab = getTabById(tabId)
+    if (!tab) return
+    setUrl(tabId, url)
+    refresh({ history: true })
   })
 
-  // Tab IPC
-  ipcMain.handle('tab:create', async (_e, url?: string) => {
-    const id = await createTab(url)
-    // Don't register with AI system yet - wait for tab:set-web-contents with real webContentsId
+  contents.on('page-title-updated', (_event, title) => {
+    setTabTitle(tabId, title)
+    const tab = getTabById(tabId)
+    if (tab) {
+      aiSystem.updateTab(tabId, tab.url, tab.title)
+      sendTab(tab)
+    }
+  })
+
+  contents.on('page-favicon-updated', (_event, favicons) => {
+    setTabFavicon(tabId, favicons[0])
+    const tab = getTabById(tabId)
+    if (tab) sendTab(tab)
+  })
+
+  contents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return
+    setTabLoading(tabId, false)
+    sendToWindow(getTabById(tabId)?.windowId, 'tab-load-error', {
+      tabId,
+      errorCode,
+      errorDescription,
+      url: validatedURL,
+    })
+  })
+
+  contents.on('render-process-gone', () => {
+    updateTab(tabId, { crashed: true, loading: false })
+    const tab = getTabById(tabId)
+    if (tab) sendTab(tab)
+  })
+
+  contents.on('audio-state-changed', () => {
+    const tab = getTabById(tabId)
+    if (tab) {
+      tab.audioPlaying = contents.isCurrentlyAudible()
+      sendTab(tab)
+    }
+  })
+
+  contents.on('destroyed', () => {
+    tabContents.delete(contents.id)
+  })
+}
+
+function openUrlInNewTab(contents: Electron.WebContents, url: string): void {
+  if (!isAllowedGuestUrl(url)) {
+    if (/^(mailto|tel):/i.test(url)) void shell.openExternal(url)
+    return
+  }
+  const host = contents.hostWebContents
+  const window = host ? BrowserWindow.fromWebContents(host) : null
+  const state = window ? windows.get(window.id) : undefined
+  if (!state) return
+  void createTab(url, { windowId: state.id, isPrivate: state.isPrivate }).then(() => {
+    sendTabs(state.id)
+    state.window.focus()
+  })
+}
+
+function registerSecurityHandlers(): void {
+  app.on('web-contents-created', (_event, contents) => {
+    if (contents.getType() === 'webview') {
+      contents.setWindowOpenHandler(({ url }) => {
+        openUrlInNewTab(contents, url)
+        return { action: 'deny' }
+      })
+      contents.on('will-navigate', (event, url) => {
+        if (!isAllowedGuestUrl(url)) event.preventDefault()
+      })
+      contents.on('will-redirect', (event, url) => {
+        if (!isAllowedGuestUrl(url)) event.preventDefault()
+      })
+      return
+    }
+
+    contents.setWindowOpenHandler(({ url }) => {
+      if (/^https?:/i.test(url)) void shell.openExternal(url)
+      return { action: 'deny' }
+    })
+  })
+}
+
+function createBrowserWindow(options: { isPrivate?: boolean; url?: string } = {}): BrowserWindow {
+  const isPrivate = options.isPrivate === true
+  const partition = isPrivate ? `ariadne-private-${randomUUID()}` : 'persist:ariadne'
+  if (isPrivate) privatePartitions.add(partition)
+  const ses = session.fromPartition(partition)
+  configureSession(ses, isPrivate, partition)
+
+  const window = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 900,
+    minHeight: 600,
+    show: false,
+    backgroundColor: '#101215',
+    autoHideMenuBar: true,
+    webPreferences: {
+      preload: path.join(__dirname, '../preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      webviewTag: true,
+      partition,
+      spellcheck: true,
+    },
+  })
+
+  const state: WindowState = { id: window.id, window, isPrivate, partition }
+  windows.set(window.id, state)
+
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  window.webContents.on('will-navigate', (event, url) => {
+    if (!url.startsWith('file://')) event.preventDefault()
+  })
+  window.webContents.on('will-attach-webview', (event, webPreferences, params) => {
+    delete (webPreferences as { preload?: string }).preload
+    webPreferences.nodeIntegration = false
+    webPreferences.contextIsolation = true
+    webPreferences.sandbox = true
+    webPreferences.webSecurity = true
+    webPreferences.allowRunningInsecureContent = false
+    webPreferences.webviewTag = false
+    if (params.partition !== partition) {
+      event.preventDefault()
+      return
+    }
+    if (params.src && !isAllowedGuestUrl(params.src)) event.preventDefault()
+  })
+
+  window.once('ready-to-show', () => {
+    if (!window.isDestroyed()) window.show()
+  })
+
+  window.on('closed', () => {
+    denyPendingForWindow(window.id)
+    const tabIds = closeTabsForWindow(window.id)
+    for (const tabId of tabIds) {
+      aiSystem.unregisterTab(tabId)
+      contextService.removeTab(tabId)
+      tabContents.forEach((mappedTabId, contentsId) => {
+        if (mappedTabId === tabId) tabContents.delete(contentsId)
+      })
+    }
+    windows.delete(window.id)
+    if (isPrivate) {
+      void ses.clearStorageData().catch(() => undefined)
+      void ses.clearCache().catch(() => undefined)
+      privatePartitions.delete(partition)
+    }
+  })
+
+  void createTab(options.url || 'about:blank', { windowId: window.id, isPrivate }).then(() => {
+    if (!window.isDestroyed()) sendTabs(window.id)
+  })
+
+  void window.loadFile(path.join(__dirname, '../renderer/index.html'))
+  return window
+}
+
+function broadcastDownload(record: DownloadRecord): void {
+  for (const state of windows.values()) {
+    if (state.window.isDestroyed()) continue
+    if (state.isPrivate !== (record.isPrivate === true)) continue
+    state.window.webContents.send('download-updated', record)
+  }
+}
+
+function registerIpc(): void {
+  // App/window ------------------------------------------------------------
+  handle('app:info', async () => ({
+    appName: app.getName(),
+    appVersion: app.getVersion(),
+    electron: process.versions.electron,
+    chrome: process.versions.chrome,
+    node: process.versions.node,
+    v8: process.versions.v8,
+    platform: process.platform,
+    arch: process.arch,
+  }))
+
+  handle('app:open-external', async (_event, url: string) => {
+    if (/^(https?:|mailto:|tel:)/i.test(url)) await shell.openExternal(url)
+  })
+
+  handle('window:info', async (event) => {
+    const state = ownerWindow(event)
+    return { id: state.id, isPrivate: state.isPrivate, partition: state.partition }
+  })
+
+  handle('window:create', async (_event, options?: { private?: boolean; url?: string }) => {
+    const window = createBrowserWindow({ isPrivate: options?.private === true, url: options?.url })
+    return window.id
+  })
+
+  handle('window:close', async (event) => {
+    ownerWindow(event).window.close()
+  })
+  handle('window:minimize', async (event) => {
+    ownerWindow(event).window.minimize()
+  })
+  handle('window:maximize', async (event) => {
+    const window = ownerWindow(event).window
+    if (window.isMaximized()) window.unmaximize()
+    else window.maximize()
+  })
+  handle('window:is-maximized', async (event) => ownerWindow(event).window.isMaximized())
+
+  // Settings --------------------------------------------------------------
+  handle('settings:get', async () => ({ ...getSettings(), searchEngines: SEARCH_ENGINES }))
+  handle('settings:set', async (_event, patch: Partial<AppSettings>) => saveSettings(patch))
+
+  handle('privacy:clear-data', async (event, options?: { history?: boolean; cookies?: boolean; cache?: boolean; permissions?: boolean }) => {
+    const state = ownerWindow(event)
+    if (options?.history !== false) {
+      await clearHistory()
+      sendToWindow(state.id, 'history-cleared')
+    }
+    if (options?.permissions) clearPermissionDecisions()
+    if (options?.cookies || options?.cache) {
+      const ses = session.fromPartition(state.partition)
+      if (options.cookies) await ses.clearStorageData({ storages: ['cookies', 'localstorage', 'indexdb', 'shadercache', 'serviceworkers', 'cachestorage'] })
+      if (options.cache) await ses.clearCache()
+    }
+    return true
+  })
+
+  // Tabs ------------------------------------------------------------------
+  handle('tab:create', async (event, url?: string) => {
+    const state = ownerWindow(event)
+    const id = await createTab(url, { windowId: state.id, isPrivate: state.isPrivate })
+    sendTabs(state.id)
     return id
   })
 
-  ipcMain.handle('tab:close', async (_e, id: string) => {
+  handle('tab:close', async (event, id: string) => {
+    const state = ownerWindow(event)
+    const tab = getTabById(id)
+    if (!tab || tab.windowId !== state.id) return null
     aiSystem.unregisterTab(id)
-    return closeTab(id)
+    contextService.removeTab(id)
+    const next = await closeTab(id, state.id)
+    sendTabs(state.id)
+    return next
   })
 
-  ipcMain.handle('tab:set-active', async (_e, id: string) => {
-    return setActiveTab(id)
+  handle('tab:set-active', async (event, id: string) => {
+    const state = ownerWindow(event)
+    await setActiveTab(id, state.id)
+    sendTabs(state.id)
   })
 
-  ipcMain.handle('tab:get-all', async () => {
-    return getTabs()
-  })
+  handle('tab:get-all', async (event) => getTabs(ownerWindow(event).id).map(serializeTab))
 
-  ipcMain.handle('tab:url', async (_e, id: string, url: string) => {
-    aiSystem.unregisterTab(id)
-    return setUrl(id, url)
-  })
-
-  ipcMain.handle('tab:set-web-contents', async (_e, id: string, webContentsId: number) => {
-    setTabWebContents(id, webContentsId)
-    const tab = getTabs().find(t => t.id === id)
-    if (tab) {
-      aiSystem.registerTab(id, webContentsId, tab.url, tab.title, tab.isPrivate || false)
+  handle('tab:navigate', async (event, id: string, url: string) => {
+    const tab = tabForEvent(event, id)
+    if (!isAllowedGuestUrl(url)) throw new Error('Only http(s) and about:blank navigation is allowed')
+    setUrl(id, url)
+    updateTab(id, { crashed: false })
+    const contents = contentsForTab(id)
+    if (contents) {
+      await contents.loadURL(url)
+    } else {
+      sendTab(tab)
     }
   })
 
-  ipcMain.handle('tab:set-title', async (_e, id: string, title: string) => {
-    setTabTitle(id, title)
+  handle('tab:set-web-contents', async (event, id: string, webContentsId: number) => {
+    const tab = tabForEvent(event, id)
+    const contents = webContents.fromId(webContentsId)
+    if (!contents || contents.isDestroyed() || contents.getType() !== 'webview') {
+      throw new Error('Invalid webview contents')
+    }
+    if (contents.hostWebContents !== event.sender) {
+      throw new Error('Webview does not belong to this window')
+    }
+    setTabWebContents(id, webContentsId)
+    aiSystem.registerTab(id, webContentsId, tab.url, tab.title, tab.isPrivate === true)
+    attachTabEvents(id, contents)
+    const current = getTabById(id)
+    if (current) sendTab(current)
   })
 
-  ipcMain.handle('tab:back', async () => {
-    if (mainWindow) mainWindow.webContents.goBack()
+  const activeContents = (event: IpcMainInvokeEvent): Electron.WebContents | null => {
+    const state = ownerWindow(event)
+    const active = getTabs(state.id).find((tab) => tab.active)
+    return active ? contentsForTab(active.id) : null
+  }
+
+  handle('tab:back', async (event) => {
+    const contents = activeContents(event)
+    if (contents?.canGoBack()) contents.goBack()
+  })
+  handle('tab:forward', async (event) => {
+    const contents = activeContents(event)
+    if (contents?.canGoForward()) contents.goForward()
+  })
+  handle('tab:reload', async (event) => {
+    activeContents(event)?.reload()
+  })
+  handle('tab:stop', async (event) => {
+    activeContents(event)?.stop()
+  })
+  handle('tab:force-reload', async (event) => {
+    activeContents(event)?.reloadIgnoringCache()
+  })
+  handle('tab:devtools', async (event) => {
+    const contents = activeContents(event)
+    if (contents) {
+      if (contents.isDevToolsOpened()) contents.closeDevTools()
+      else contents.openDevTools({ mode: 'detach' })
+    }
   })
 
-  ipcMain.handle('tab:forward', async () => {
-    if (mainWindow) mainWindow.webContents.goForward()
-  })
-
-  ipcMain.handle('tab:reload', async () => {
-    if (mainWindow) mainWindow.webContents.reload()
-  })
-
-  ipcMain.handle('tab:stop', async () => {
-    if (mainWindow) mainWindow.webContents.stop()
-  })
-
-  ipcMain.handle('tab:duplicate', async (_e, id: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (!tab) return null
-    const newId = await createTab(tab.url)
-    // Don't register with AI system yet - wait for tab:set-web-contents
+  handle('tab:duplicate', async (event, id: string) => {
+    tabForEvent(event, id)
+    const newId = await duplicateTab(id)
+    sendTabs(ownerWindow(event).id)
     return newId
   })
 
-  ipcMain.handle('tab:pin', async (_e, id: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab) {
-      mainWindow?.webContents.send('tab-pinned', id, !tab.pinned)
-    }
-    return true
+  handle('tab:pin', async (event, id: string) => {
+    tabForEvent(event, id)
+    const pinned = pinTab(id)
+    const tab = getTabById(id)
+    if (tab) sendTab(tab)
+    return pinned
   })
 
-  ipcMain.handle('tab:mute', async (_e, id: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab && tab.webContentsId) {
-      const wc = webContents.fromId(tab.webContentsId)
-      if (wc) {
-        wc.setAudioMuted(!tab.muted)
-        mainWindow?.webContents.send('tab-muted', id, !tab.muted)
-      }
-    }
-    return true
+  handle('tab:mute', async (event, id: string) => {
+    tabForEvent(event, id)
+    const muted = muteTab(id)
+    const contents = contentsForTab(id)
+    if (contents) contents.setAudioMuted(muted)
+    const tab = getTabById(id)
+    if (tab) sendTab(tab)
+    return muted
   })
 
-  ipcMain.handle('tab:reorder', async (_e, fromIndex: number, toIndex: number) => {
-    reorderTab(fromIndex, toIndex)
-    return getTabs()
+  handle('tab:reorder', async (event, fromIndex: number, toIndex: number) => {
+    const state = ownerWindow(event)
+    reorderTab(fromIndex, toIndex, state.id)
+    sendTabs(state.id)
   })
 
-  ipcMain.handle('tab:reopen-closed', async () => {
-    return reopenClosedTab()
+  handle('tab:reopen-closed', async (event) => {
+    const state = ownerWindow(event)
+    const id = await reopenClosedTab(state.id)
+    sendTabs(state.id)
+    return id
   })
 
-  ipcMain.handle('tab:get-closed', async () => {
-    return getClosedTabs()
+  handle('tab:get-closed', async () => getClosedTabs())
+
+  handle('tab:set-zoom', async (event, id: string, factor: number) => {
+    tabForEvent(event, id)
+    const contents = contentsForTab(id)
+    if (contents) contents.setZoomFactor(factor)
+    setTabZoom(id, factor)
+    const tab = getTabById(id)
+    if (tab) sendTab(tab)
   })
 
-  ipcMain.handle('tab:set-zoom', async (_e, id: string, factor: number) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab && tab.webContentsId) {
-      const wc = webContents.fromId(tab.webContentsId)
-      if (wc) {
-        wc.setZoomFactor(factor)
-      }
-    }
-    return true
+  handle('tab:get-zoom', async (event, id: string) => {
+    tabForEvent(event, id)
+    return contentsForTab(id)?.getZoomFactor() ?? 1
   })
 
-  ipcMain.handle('tab:get-zoom', async (_e, id: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab && tab.webContentsId) {
-      const wc = webContents.fromId(tab.webContentsId)
-      if (wc) {
-        return wc.getZoomFactor()
-      }
-    }
-    return 1.0
+  handle('tab:find-in-page', async (event, id: string, text: string, options?: { forward?: boolean; findNext?: boolean }) => {
+    tabForEvent(event, id)
+    return (await findInPage(id, text, options)) ?? { requestId: 0, activeMatchOrdinal: 0, matches: 0 }
   })
 
-  ipcMain.handle('tab:find-in-page', async (_e, id: string, text: string, options?: any) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab && tab.webContentsId) {
-      const wc = webContents.fromId(tab.webContentsId)
-      if (wc) {
-        return wc.findInPage(text, options)
-      }
-    }
-    return { requestId: 0, activeMatchOrdinal: 0, matches: 0, selectionArea: { x: 0, y: 0, width: 0, height: 0 } }
+  handle('tab:stop-finding', async (event, id: string, action: 'clear' | 'keep' | 'activate') => {
+    tabForEvent(event, id)
+    const mapped = action === 'clear' ? 'clearSelection' : action === 'keep' ? 'keepSelection' : 'activateSelection'
+    stopFinding(id, mapped)
   })
 
-  ipcMain.handle('tab:stop-finding', async (_e, id: string, action: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab && tab.webContentsId) {
-      const wc = webContents.fromId(tab.webContentsId)
-      if (wc) {
-        wc.stopFindInPage(action as 'clearSelection' | 'keepSelection' | 'activateSelection')
-      }
-    }
-    return true
+  handle('tab:print', async (event, id: string) => {
+    tabForEvent(event, id)
+    printTab(id)
   })
 
-  ipcMain.handle('tab:print', async (_e, id: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab && tab.webContentsId) {
-      const wc = webContents.fromId(tab.webContentsId)
-      if (wc) {
-        wc.print({ silent: false, printBackground: true })
-      }
-    }
-    return true
+  handle('tab:fullscreen', async (event) => {
+    const window = ownerWindow(event).window
+    window.setFullScreen(!window.isFullScreen())
   })
 
-  ipcMain.handle('tab:view-source', async (_e, id: string) => {
-    const tab = getTabs().find(t => t.id === id)
-    if (tab) {
-      await createTab(`view-source:${tab.url}`)
-    }
-    return true
+  handle('tab:view-source', async (event, id: string) => {
+    tabForEvent(event, id)
+    const contents = contentsForTab(id)
+    if (!contents) return
+    const source = await contents.executeJavaScript('document.documentElement.outerHTML', true)
+    const dataUrl = `data:text/plain;charset=utf-8,${encodeURIComponent(String(source))}`
+    const state = ownerWindow(event)
+    const newId = await createTab(dataUrl, { windowId: state.id, isPrivate: state.isPrivate })
+    sendTabs(state.id)
+    return newId
   })
 
-  ipcMain.handle('tab:fullscreen', async (_e, id: string) => {
-    if (mainWindow) {
-      mainWindow.setFullScreen(!mainWindow.isFullScreen())
-    }
-    return true
+  // History ---------------------------------------------------------------
+  handle('history:get', async () => getHistory())
+  handle('history:add', async (_event, url: string, title: string) => addHistory(url, title))
+  handle('history:delete', async (_event, id: number) => deleteHistoryEntry(id))
+  handle('history:clear', async (event, options?: { since?: number }) => {
+    await clearHistory(options?.since)
+    sendToWindow(ownerWindow(event).id, 'history-cleared')
   })
 
-  // History IPC
-  ipcMain.handle('history:get', async () => {
-    return getHistory()
-  })
+  // Bookmarks -------------------------------------------------------------
+  const getBookmarks = (): any[] => {
+    const value = bookmarksStore.get('bookmarks')
+    return Array.isArray(value) ? (value as any[]) : []
+  }
+  const saveBookmarks = (bookmarks: any[]): void => bookmarksStore.set('bookmarks', bookmarks)
 
-  ipcMain.handle('history:add', async (_e, url: string, title: string) => {
-    return addHistory(url, title)
-  })
-
-  ipcMain.handle('history:delete', async (_e, id: number) => {
-    const dbPath = path.join(app.getPath('userData'), 'ariadne.db')
-    const SQLite = require('sqlite3')
-    const db = new SQLite.Database(dbPath)
-    return new Promise<void>((resolve, reject) => {
-      db.run('DELETE FROM history WHERE id = ?', [id], (err: any) => {
-        db.close()
-        if (err) reject(err)
-        else resolve()
-      })
-    })
-  })
-
-  ipcMain.handle('history:clear', async (_e, options?: { since?: number }) => {
-    const dbPath = path.join(app.getPath('userData'), 'ariadne.db')
-    const SQLite = require('sqlite3')
-    const db = new SQLite.Database(dbPath)
-    return new Promise<void>((resolve, reject) => {
-      let query = 'DELETE FROM history'
-      const params: any[] = []
-      if (options?.since) {
-        query += ' WHERE visited_at >= ?'
-        params.push(options.since)
-      }
-      db.run(query, params, (err: any) => {
-        db.close()
-        if (err) reject(err)
-        else resolve()
-      })
-    })
-  })
-
-  // Bookmarks IPC
-  ipcMain.handle('bookmarks:get', async () => {
-    return getBookmarks()
-  })
-
-  ipcMain.handle('bookmarks:add', async (_e, bookmark: { title: string; url: string; folderId?: string }) => {
+  handle('bookmarks:get', async () => getBookmarks())
+  handle('bookmarks:add', async (_event, bookmark: { title: string; url: string; folderId?: string }) => {
     const bookmarks = getBookmarks()
-    const newBookmark = {
-      id: `bm_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      title: bookmark.title,
-      url: bookmark.url,
+    const entry = {
+      id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      title: String(bookmark.title || bookmark.url || 'Bookmark'),
+      url: String(bookmark.url || ''),
       folderId: bookmark.folderId,
       parentId: bookmark.folderId,
       isFolder: false,
       dateAdded: Date.now(),
       dateModified: Date.now(),
     }
-    bookmarks.push(newBookmark)
+    bookmarks.push(entry)
     saveBookmarks(bookmarks)
-    return newBookmark
+    return entry
   })
-
-  ipcMain.handle('bookmarks:add-folder', async (_e, title: string, parentId?: string) => {
+  handle('bookmarks:add-folder', async (_event, title: string, parentId?: string) => {
     const bookmarks = getBookmarks()
-    const newFolder = {
-      id: `bm_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-      title,
+    const entry = {
+      id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+      title: String(title || 'Folder'),
       url: '',
       folderId: parentId,
       parentId,
       isFolder: true,
-      children: [],
       dateAdded: Date.now(),
       dateModified: Date.now(),
     }
-    bookmarks.push(newFolder)
+    bookmarks.push(entry)
     saveBookmarks(bookmarks)
-    return newFolder
+    return entry
   })
-
-  ipcMain.handle('bookmarks:update', async (_e, id: string, updates: { title?: string; url?: string }) => {
+  handle('bookmarks:update', async (_event, id: string, updates: { title?: string; url?: string }) => {
     const bookmarks = getBookmarks()
-    const index = bookmarks.findIndex(b => b.id === id)
-    if (index >= 0) {
-      bookmarks[index] = { ...bookmarks[index], ...updates, dateModified: Date.now() }
-      saveBookmarks(bookmarks)
-      return bookmarks[index]
-    }
-    return null
+    const index = bookmarks.findIndex((bookmark) => bookmark.id === id)
+    if (index < 0) return null
+    bookmarks[index] = { ...bookmarks[index], ...updates, dateModified: Date.now() }
+    saveBookmarks(bookmarks)
+    return bookmarks[index]
   })
-
-  ipcMain.handle('bookmarks:delete', async (_e, id: string) => {
+  handle('bookmarks:delete', async (_event, id: string) => {
     let bookmarks = getBookmarks()
-    const deleteRecursive = (id: string) => {
-      bookmarks = bookmarks.filter(b => b.id !== id)
-      const children = bookmarks.filter(b => b.parentId === id)
-      for (const child of children) {
-        deleteRecursive(child.id)
-      }
+    const remove = (target: string): void => {
+      bookmarks = bookmarks.filter((bookmark) => bookmark.id !== target)
+      for (const child of bookmarks.filter((bookmark) => bookmark.parentId === target)) remove(child.id)
     }
-    deleteRecursive(id)
+    remove(id)
     saveBookmarks(bookmarks)
-    return true
   })
-
-  ipcMain.handle('bookmarks:move', async (_e, id: string, parentId: string, index?: number) => {
+  handle('bookmarks:move', async (_event, id: string, parentId: string, index?: number) => {
     const bookmarks = getBookmarks()
-    const bookmark = bookmarks.find(b => b.id === id)
-    if (bookmark) {
-      bookmark.parentId = parentId
-      bookmark.folderId = parentId
-      bookmark.dateModified = Date.now()
-      saveBookmarks(bookmarks)
-      return bookmark
+    const bookmark = bookmarks.find((candidate) => candidate.id === id)
+    if (!bookmark) return null
+    bookmark.parentId = parentId || undefined
+    bookmark.folderId = parentId || undefined
+    bookmark.dateModified = Date.now()
+    if (typeof index === 'number') {
+      bookmarks.splice(bookmarks.indexOf(bookmark), 1)
+      bookmarks.splice(Math.max(0, index), 0, bookmark)
     }
-    return null
+    saveBookmarks(bookmarks)
+    return bookmark
   })
-
-  ipcMain.handle('bookmarks:import', async (_e, html: string) => {
-    console.log('Import bookmarks - TBD')
-    return { imported: 0 }
-  })
-
-  ipcMain.handle('bookmarks:export', async () => {
+  handle('bookmarks:export', async () => {
     const bookmarks = getBookmarks()
-    let html = '<!DOCTYPE NETSCAPE-Bookmark-file-1>\n<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">\n<TITLE>Bookmarks</TITLE>\n<H1>Bookmarks</H1>\n<DL><p>\n'
-    const exportFolder = (parentId: string | undefined, indent: string) => {
-      const items = bookmarks.filter(b => b.parentId === parentId)
-      for (const item of items) {
-        if (item.isFolder) {
-          html += `${indent}<DT><H3>${item.title}</H3>\n${indent}<DL><p>\n`
-          exportFolder(item.id, indent + '  ')
-          html += `${indent}</DL><p>\n`
-        } else {
-          html += `${indent}<DT><A HREF="${item.url}">${item.title}</A>\n`
-        }
-      }
+    const lines = ['<!DOCTYPE NETSCAPE-Bookmark-file-1>', '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">', '<TITLE>Bookmarks</TITLE>', '<H1>Bookmarks</H1>', '<DL><p>']
+    for (const bookmark of bookmarks) {
+      if (bookmark.isFolder) continue
+      lines.push(`  <DT><A HREF="${String(bookmark.url).replace(/"/g, '&quot;')}">${String(bookmark.title).replace(/</g, '&lt;')}</A>`)
     }
-    exportFolder(undefined, '  ')
-    html += '</DL><p>'
-    return html
+    lines.push('</DL><p>')
+    return lines.join('\n')
   })
-
-  // Downloads IPC
-  ipcMain.handle('downloads:get', async () => {
-    return getDownloads()
-  })
-
-  ipcMain.handle('downloads:pause', async (_e, id: string) => {
-    return true
-  })
-
-  ipcMain.handle('downloads:resume', async (_e, id: string) => {
-    return true
-  })
-
-  ipcMain.handle('downloads:cancel', async (_e, id: string) => {
-    return true
-  })
-
-  ipcMain.handle('downloads:remove', async (_e, id: string) => {
-    let downloads = getDownloads()
-    downloads = downloads.filter(d => d.id !== id)
-    saveDownloads(downloads)
-    return true
-  })
-
-  ipcMain.handle('downloads:open', async (_e, id: string) => {
-    const downloads = getDownloads()
-    const download = downloads.find(d => d.id === id)
-    if (download?.filePath) {
-      shell.openPath(download.filePath)
+  handle('bookmarks:import', async (_event, html: string) => {
+    const bookmarks = getBookmarks()
+    const matches = String(html).matchAll(/<A\s+[^>]*HREF="([^"]+)"[^>]*>([\s\S]*?)<\/A>/gi)
+    let imported = 0
+    for (const match of matches) {
+      const url = match[1]
+      const title = match[2].replace(/<[^>]+>/g, '').trim() || url
+      if (!/^https?:/i.test(url)) continue
+      bookmarks.push({
+        id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+        title,
+        url,
+        isFolder: false,
+        dateAdded: Date.now(),
+        dateModified: Date.now(),
+      })
+      imported += 1
     }
-    return true
+    saveBookmarks(bookmarks)
+    return { imported }
   })
 
-  ipcMain.handle('downloads:show-in-folder', async (_e, id: string) => {
-    const downloads = getDownloads()
-    const download = downloads.find(d => d.id === id)
-    if (download?.filePath) {
-      shell.showItemInFolder(download.filePath)
-    }
-    return true
+  // Downloads -------------------------------------------------------------
+  const ownsDownload = (event: IpcMainInvokeEvent, id: string): boolean =>
+    downloadManager.getDownloads(ownerWindow(event).isPrivate).some((record) => record.id === id)
+
+  handle('downloads:get', async (event) => downloadManager.getDownloads(ownerWindow(event).isPrivate))
+  handle('downloads:pause', async (event, id: string) => ownsDownload(event, id) && downloadManager.pause(id))
+  handle('downloads:resume', async (event, id: string) => ownsDownload(event, id) && downloadManager.resume(id))
+  handle('downloads:cancel', async (event, id: string) => ownsDownload(event, id) && downloadManager.cancel(id))
+  handle('downloads:remove', async (event, id: string) => {
+    if (ownsDownload(event, id)) downloadManager.remove(id)
+  })
+  handle('downloads:open', async (event, id: string) => {
+    if (ownsDownload(event, id)) downloadManager.open(id)
+  })
+  handle('downloads:show-in-folder', async (event, id: string) => {
+    if (ownsDownload(event, id)) downloadManager.showInFolder(id)
+  })
+  handle('downloads:retry', async (event, id: string) => ownsDownload(event, id) && downloadManager.retry(id))
+  handle('downloads:clear', async (event) => downloadManager.clear(ownerWindow(event).isPrivate))
+  handle('downloads:get-path', async () => downloadManager.getDirectory())
+  handle('downloads:set-path', async (_event, directory: string) => {
+    saveSettings({ downloadPath: directory })
+    downloadManager.setDirectory(directory)
   })
 
-  ipcMain.handle('downloads:retry', async (_e, id: string) => {
-    return true
+  // Permissions -----------------------------------------------------------
+  handle('permission:respond', async (_event, id: string, decision: 'grant' | 'deny', remember: boolean) => {
+    return respondToPermission(id, decision === 'grant', remember)
   })
+  handle('permission:get-decisions', async () => getPermissionDecisions())
+  handle('permission:clear', async (_event, origin?: string) => clearPermissionDecisions(origin))
 
-  ipcMain.handle('downloads:clear', async () => {
-    saveDownloads([])
-    return true
-  })
+  // AI --------------------------------------------------------------------
+  handle('ai:config:get', async () => aiSystem.getConfig())
+  handle('ai:config:update', async (_event, updates) => aiSystem.updateConfig(updates))
+  handle('ai:provider:add', async (_event, config, apiKey) => aiSystem.addProvider(config, apiKey))
+  handle('ai:provider:remove', async (_event, id) => aiSystem.removeProvider(id))
+  handle('ai:provider:test', async (_event, id, apiKey) => aiSystem.testProvider(id, apiKey))
+  handle('ai:provider:set-key', async (_event, providerId, keyName, apiKey) => aiSystem.setApiKey(providerId, keyName, apiKey))
+  handle('ai:provider:get-masked-key', async (_event, providerId, keyName) => aiSystem.getMaskedApiKey(providerId, keyName))
+  handle('ai:providers:list', async () => aiSystem.getRegistry().getAllConfigs())
+  handle('ai:models:list', async () => aiSystem.getAllModels())
+  handle('ai:models:for-provider', async (_event, providerId) => aiSystem.getRegistry().getModelsForProvider(providerId))
+  handle('ai:model-slot:set', async (_event, slot, modelId) => aiSystem.setModelSlot(slot, modelId))
+  handle('ai:model-slot:get', async (_event, slot) => aiSystem.getModelSlot(slot))
+  handle('ai:model-slot:get-all', async () => aiSystem.getRegistry().getAllModelSlots())
+  handle('ai:model-slot:get-model', async (_event, slot) => aiSystem.getModelForSlot(slot))
+  handle('ai:provider-types', async () => aiSystem.getProviderTypes())
+  handle('ai:system-prompt:get', async () => aiSystem.getSystemPrompt())
+  handle('ai:system-prompt:set', async (_event, prompt) => aiSystem.setSystemPrompt(prompt))
+  handle('ai:chat:complete', async (_event, request) => aiSystem.getRegistry().chatCompletion(request))
+  handle('ai:chat:cancel', async () => aiSystem.cancelChat())
+  handle('ai:usage', async (_event, providerId?: string, since?: number) => aiSystem.getRegistry().getUsageHistory(providerId, since))
+  handle('ai:usage-total', async (_event, since?: number) => aiSystem.getRegistry().getTotalUsage(since))
 
-  ipcMain.handle('downloads:set-path', async (_e, downloadPath: string) => {
-    saveSettings({ ...getSettings(), downloadPath })
-    return true
-  })
-
-  ipcMain.handle('downloads:get-path', async () => {
-    const settings = getSettings()
-    return settings.downloadPath || app.getPath('downloads')
-  })
-
-  // Permissions IPC
-  ipcMain.handle('permission:request', async (_e, tabId: string, permission: string) => {
-    return 'ask'
-  })
-
-  ipcMain.handle('permission:get', async (_e, origin: string) => {
-    return { origin, permission: 'ask' }
-  })
-
-  ipcMain.handle('permission:set', async (_e, origin: string, permission: string, setting: 'grant' | 'deny' | 'ask') => {
-    return true
-  })
-
-  ipcMain.handle('permission:clear', async (_e, origin?: string) => {
-    return true
-  })
-
-  // Window IPC
-  ipcMain.handle('window:create', async (_e, options?: { private?: boolean; url?: string }) => {
-    const win = new BrowserWindow({
-      width: 1400,
-      height: 900,
-      minWidth: 800,
-      minHeight: 600,
-      webPreferences: {
-        preload: path.join(__dirname, '../preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        webviewTag: true,
-        partition: options?.private ? `ariadne-private-${Date.now()}` : 'persist:ariadne',
-      }
+  handle('ai:chat:stream', async (event, request, requestId: string) => {
+    const registry = aiSystem.getRegistry()
+    const sender = event.sender
+    return new Promise((resolve, reject) => {
+      let finishReason = 'stop'
+      let usage: unknown
+      registry
+        .chatCompletionStream(request, (chunk: any) => {
+          if (chunk.usage) usage = chunk.usage
+          if (chunk.choices?.[0]?.finishReason) finishReason = chunk.choices[0].finishReason
+          if (!sender.isDestroyed()) sender.send('ai:stream-chunk', { requestId, chunk })
+        })
+        .then(() => resolve({ requestId, finishReason, usage }))
+        .catch(reject)
     })
-    win.loadFile(path.join(__dirname, '../renderer/index.html'))
-    if (options?.url) {
-      win.webContents.loadURL(options.url)
-    }
-    return true
   })
 
-  ipcMain.handle('window:close', async () => {
-    if (mainWindow) mainWindow.close()
-    return true
-  })
-
-  ipcMain.handle('window:minimize', async () => {
-    if (mainWindow) mainWindow.minimize()
-    return true
-  })
-
-  ipcMain.handle('window:maximize', async () => {
-    if (mainWindow) {
-      if (mainWindow.isMaximized()) mainWindow.unmaximize()
-      else mainWindow.maximize()
-    }
-    return true
-  })
-
-  ipcMain.handle('window:is-maximized', async () => {
-    return mainWindow?.isMaximized() || false
-  })
-
-  // AI System IPC
-  ipcMain.handle('ai:config:get', async () => {
-    return aiSystem.getConfig()
-  })
-
-  ipcMain.handle('ai:config:update', async (_e, updates) => {
-    await aiSystem.updateConfig(updates)
-  })
-
-  ipcMain.handle('ai:provider:add', async (_e, config, apiKey) => {
-    await aiSystem.addProvider(config, apiKey)
-  })
-
-  ipcMain.handle('ai:provider:remove', async (_e, id) => {
-    await aiSystem.removeProvider(id)
-  })
-
-  ipcMain.handle('ai:provider:test', async (_e, id, apiKey) => {
-    return aiSystem.testProvider(id, apiKey)
-  })
-
-  ipcMain.handle('ai:provider:set-key', async (_e, providerId, keyName, apiKey) => {
-    await aiSystem.setApiKey(providerId, keyName, apiKey)
-  })
-
-  ipcMain.handle('ai:provider:get-masked-key', async (_e, providerId, keyName) => {
-    return aiSystem.getMaskedApiKey(providerId, keyName)
-  })
-
-  ipcMain.handle('ai:providers:list', async () => {
-    return aiSystem.getRegistry().getAllConfigs()
-  })
-
-  ipcMain.handle('ai:models:list', async () => {
-    return aiSystem.getAllModels()
-  })
-
-  ipcMain.handle('ai:models:for-provider', async (_e, providerId) => {
-    return aiSystem.getRegistry().getModelsForProvider(providerId)
-  })
-
-  ipcMain.handle('ai:model-slot:set', async (_e, slot, modelId) => {
-    aiSystem.setModelSlot(slot, modelId)
-  })
-
-  ipcMain.handle('ai:model-slot:get', async (_e, slot) => {
-    return aiSystem.getModelSlot(slot)
-  })
-
-  ipcMain.handle('ai:model-slot:get-all', async () => {
-    return aiSystem.getRegistry().getAllModelSlots()
-  })
-
-  ipcMain.handle('ai:chat:complete', async (_e, request) => {
-    return aiSystem.getRegistry().chatCompletion(request)
-  })
-
-  ipcMain.handle('ai:system-prompt:get', async () => {
-    return aiSystem.getSystemPrompt()
-  })
-
-  ipcMain.handle('ai:system-prompt:set', async (_e, prompt) => {
-    aiSystem.setSystemPrompt(prompt)
-  })
-
-  ipcMain.handle('ai:provider-types', async () => {
-    return aiSystem.getProviderTypes()
-  })
-
-  // Page Extraction IPC
-  ipcMain.handle('ai:extract-page', async (_e, tabId: string) => {
+  handle('ai:extract-page', async (event, tabId: string) => {
+    tabForEvent(event, tabId)
     return aiSystem.extractPage(tabId)
   })
-
-  ipcMain.handle('ai:get-tabs-context', async (_e, tabIds: string[]) => {
-    return aiSystem.getTabsContext(tabIds)
+  handle('ai:get-tabs-context', async (event, tabIds: string[]) => {
+    const allowed = new Set(getTabs(ownerWindow(event).id).map((tab) => tab.id))
+    return aiSystem.getTabsContext(tabIds.filter((id) => allowed.has(id)))
+  })
+  handle('ai:context:retrieve', async (event, query: string, tabIds?: string[]) => {
+    const allowed = getTabs(ownerWindow(event).id).map((tab) => tab.id)
+    return aiSystem.getContextForQuery(query, tabIds ? tabIds.filter((id) => allowed.includes(id)) : allowed)
+  })
+  handle('ai:context:format', async (event, query: string, tabIds?: string[]) => {
+    const allowed = getTabs(ownerWindow(event).id).map((tab) => tab.id)
+    return aiSystem.formatContextForLLM(query, tabIds ? tabIds.filter((id) => allowed.includes(id)) : allowed)
+  })
+  handle('ai:context:ingest', async (event, tabId: string) => {
+    tabForEvent(event, tabId)
+    return aiSystem.ingestTab(tabId)
   })
 
-  // Context Retrieval IPC
-  ipcMain.handle('ai:context:retrieve', async (_e, query: string, tabIds?: string[]) => {
-    return aiSystem.getContextForQuery(query, tabIds)
+  // Cross-tab context -----------------------------------------------------
+  handle('context:get-state', async (event) => contextService.getState(ownerWindow(event).id))
+  handle('context:extract', async (event, selection, options) =>
+    contextService.extract(selection, options, ownerWindow(event).id)
+  )
+  handle('context:preview', async (event, question: string, tabIds?: string[], maxChunks?: number) => {
+    const allowed = getTabs(ownerWindow(event).id).map((tab) => tab.id)
+    const scoped = tabIds && tabIds.length > 0 ? tabIds.filter((id) => allowed.includes(id)) : allowed
+    return contextService.preview(question, scoped, maxChunks)
   })
-
-  ipcMain.handle('ai:context:format', async (_e, query: string, tabIds?: string[]) => {
-    return aiSystem.formatContextForLLM(query, tabIds)
+  handle('context:ask', async (_event, payloadHash: string) => contextService.ask(payloadHash))
+  handle('context:set-exclusions', async (_event, hosts: string[]) => contextService.applyExclusions(hosts))
+  handle('context:set-private-session', async (_event, enabled: boolean) => contextService.setPrivateSession(enabled))
+  handle('context:clear-private', async () => {
+    contextService.clearPrivate()
+    return contextService.getState()
   })
-
-  ipcMain.handle('ai:context:ingest', async (_e, tabId: string) => {
-    await aiSystem.ingestTab(tabId)
+  handle('context:clear', async () => contextService.clearAll())
+  handle('context:remove-item', async (_event, itemId: string) => contextService.removeItem(itemId))
+  handle('context:remove-tab', async (_event, tabId: string) => contextService.removeTab(tabId))
+  handle('context:get-item-text', async (event, itemId: string) => {
+    const item = contextService.getItemText(itemId)
+    if (!item) return null
+    const allowed = new Set(getTabs(ownerWindow(event).id).map((tab) => tab.id))
+    const state = contextService.getState(ownerWindow(event).id)
+    const summary = state.items.find((candidate) => candidate.id === itemId)
+    if (!summary || !allowed.has(summary.tabId)) return null
+    return item
   })
-
-  // Streaming chat
-  ipcMain.handle('ai:chat:stream', async (_e, request) => {
-    const { ProviderRegistry } = await import('./ai/registry')
-    const registry = aiSystem.getRegistry()
-    
-    return new Promise<{ id: string; model: string; choices: any[]; usage?: any }>((resolve, reject) => {
-      const chunks: any[] = []
-      let accumulatedUsage: any = undefined
-      let finishReason = 'stop'
-      
-      registry.chatCompletionStream(request, (chunk: any) => {
-        if (chunk.usage) accumulatedUsage = chunk.usage
-        if (chunk.choices[0]?.finishReason) finishReason = chunk.choices[0].finishReason
-        chunks.push(chunk)
-        
-        if (mainWindow) {
-          mainWindow.webContents.send('ai:stream-chunk', chunk)
-        }
-      }).then(() => {
-        resolve({
-          id: `stream-${Date.now()}`,
-          model: request.model,
-          choices: [{ index: 0, message: { role: 'assistant', content: '' }, finishReason }],
-          usage: accumulatedUsage,
-        })
-      }).catch(reject)
-    })
+  handle('context:screenshot', async (event, tabId: string) => {
+    tabForEvent(event, tabId)
+    return contextService.screenshot(tabId)
   })
-
-  // Security
-  app.on('web-contents-created', (_event, contents) => {
-    contents.setWindowOpenHandler(({ url }) => {
-      if (url.startsWith('https:') || url.startsWith('http:') || url.startsWith('file:') || url.startsWith('about:')) {
-        return { action: 'allow' }
-      }
-      return { action: 'deny' }
-    })
-  })
-
-  // Permission handler
-  session.defaultSession.setPermissionRequestHandler((webContents, permission, callback) => {
-    const origin = webContents.getURL()
-    if (mainWindow) {
-      mainWindow.webContents.send('permission-request', { origin, permission })
-      callback(false)
-    } else {
-      callback(false)
-    }
-  })
-
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 800,
-    minHeight: 600,
-    webPreferences: {
-      preload: path.join(__dirname, '../preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-      webviewTag: true
-    }
-  })
-
-  console.log('Loading file:', path.join(__dirname, '../renderer/index.html'))
-  mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'))
-  mainWindow.webContents.openDevTools({ mode: 'detach' })
-
-  // Register global shortcuts
-  registerGlobalShortcuts()
-
-  // WebContents event tracking
-  mainWindow.webContents.on('did-navigate', (_event, url) => {
-    const activeTab = getTabs().find(t => t.active)
-    if (activeTab && activeTab.webContentsId) {
-      aiSystem.registerTab(activeTab.id, activeTab.webContentsId, url, activeTab.title || 'Untitled', activeTab.isPrivate || false)
-    }
-  })
-
-  mainWindow!.webContents.on('page-title-updated', (_event, title) => {
-    const activeTab = getTabs().find(t => t.active)
-    if (activeTab && activeTab.webContentsId) {
-      setTabTitle(activeTab.id, title)
-      aiSystem.registerTab(activeTab.id, activeTab.webContentsId, activeTab.url, title, activeTab.isPrivate || false)
-      mainWindow!.webContents.send('url-changed', activeTab.id, activeTab.url, title)
-    }
-  })
-
-  mainWindow!.webContents.on('did-finish-load', () => {
-    const activeTab = getTabs().find(t => t.active)
-    if (activeTab && activeTab.webContentsId) {
-      aiSystem.registerTab(activeTab.id, activeTab.webContentsId, activeTab.url, activeTab.title || 'Untitled', activeTab.isPrivate || false)
-    }
-  })
-
-  mainWindow!.on('closed', () => {
-    mainWindow = null
-  })
-})
-
-function registerGlobalShortcuts() {
-  const shortcuts = [
-    { accelerator: 'Ctrl+T', callback: () => mainWindow?.webContents.send('shortcut', 'new-tab') },
-    { accelerator: 'Ctrl+W', callback: () => mainWindow?.webContents.send('shortcut', 'close-tab') },
-    { accelerator: 'Ctrl+Shift+T', callback: () => mainWindow?.webContents.send('shortcut', 'reopen-closed-tab') },
-    { accelerator: 'Ctrl+Tab', callback: () => mainWindow?.webContents.send('shortcut', 'next-tab') },
-    { accelerator: 'Ctrl+Shift+Tab', callback: () => mainWindow?.webContents.send('shortcut', 'prev-tab') },
-    { accelerator: 'Ctrl+L', callback: () => mainWindow?.webContents.send('shortcut', 'focus-address') },
-    { accelerator: 'F6', callback: () => mainWindow?.webContents.send('shortcut', 'focus-address') },
-    { accelerator: 'Ctrl+F', callback: () => mainWindow?.webContents.send('shortcut', 'find-in-page') },
-    { accelerator: 'F3', callback: () => mainWindow?.webContents.send('shortcut', 'find-next') },
-    { accelerator: 'Ctrl+G', callback: () => mainWindow?.webContents.send('shortcut', 'find-next') },
-    { accelerator: 'Shift+F3', callback: () => mainWindow?.webContents.send('shortcut', 'find-prev') },
-    { accelerator: 'Ctrl+Shift+G', callback: () => mainWindow?.webContents.send('shortcut', 'find-prev') },
-    { accelerator: 'F5', callback: () => mainWindow?.webContents.send('shortcut', 'reload') },
-    { accelerator: 'Ctrl+R', callback: () => mainWindow?.webContents.send('shortcut', 'reload') },
-    { accelerator: 'Ctrl+Shift+R', callback: () => mainWindow?.webContents.send('shortcut', 'force-reload') },
-    { accelerator: 'Escape', callback: () => mainWindow?.webContents.send('shortcut', 'stop') },
-    { accelerator: 'Alt+Left', callback: () => mainWindow?.webContents.send('shortcut', 'back') },
-    { accelerator: 'Alt+Right', callback: () => mainWindow?.webContents.send('shortcut', 'forward') },
-    { accelerator: 'Alt+Home', callback: () => mainWindow?.webContents.send('shortcut', 'home') },
-    { accelerator: 'Ctrl+J', callback: () => mainWindow?.webContents.send('shortcut', 'open-downloads') },
-    { accelerator: 'Ctrl+H', callback: () => mainWindow?.webContents.send('shortcut', 'open-history') },
-    { accelerator: 'Ctrl+Shift+B', callback: () => mainWindow?.webContents.send('shortcut', 'toggle-bookmarks') },
-    { accelerator: 'Ctrl+Shift+A', callback: () => mainWindow?.webContents.send('shortcut', 'toggle-ai') },
-    { accelerator: 'F12', callback: () => mainWindow?.webContents.send('shortcut', 'devtools') },
-    { accelerator: 'Ctrl+Shift+I', callback: () => mainWindow?.webContents.send('shortcut', 'devtools') },
-    { accelerator: 'Ctrl+=', callback: () => mainWindow?.webContents.send('shortcut', 'zoom-in') },
-    { accelerator: 'Ctrl+-', callback: () => mainWindow?.webContents.send('shortcut', 'zoom-out') },
-    { accelerator: 'Ctrl+0', callback: () => mainWindow?.webContents.send('shortcut', 'zoom-reset') },
-    { accelerator: 'F11', callback: () => mainWindow?.webContents.send('shortcut', 'fullscreen') },
-    { accelerator: 'Ctrl+P', callback: () => mainWindow?.webContents.send('shortcut', 'print') },
-    { accelerator: 'Ctrl+U', callback: () => mainWindow?.webContents.send('shortcut', 'view-source') },
-    { accelerator: 'Ctrl+N', callback: () => mainWindow?.webContents.send('shortcut', 'new-window') },
-    { accelerator: 'Ctrl+Shift+N', callback: () => mainWindow?.webContents.send('shortcut', 'new-private-window') },
-  ]
-
-  for (const shortcut of shortcuts) {
-    globalShortcut.register(shortcut.accelerator, shortcut.callback)
-  }
+  handle('context:mark-tab-private', async (_event, tabId: string, isPrivate: boolean) =>
+    contextService.markTabPrivate(tabId, isPrivate)
+  )
 }
 
-app.on('window-all-closed', () => {
-  globalShortcut.unregisterAll()
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
-})
+downloadManager.on('updated', (record: DownloadRecord) => broadcastDownload(record))
+downloadManager.on('removed', (id: string) => broadcast('download-removed', id))
+downloadManager.on('cleared', () => broadcast('downloads-cleared'))
 
-app.on('activate', () => {
-  if (BrowserWindow.getAllWindows().length === 0) {
-    const win = new BrowserWindow({
-      width: 1400,
-      height: 900,
-      webPreferences: {
-        preload: path.join(__dirname, '../preload.js'),
-        contextIsolation: true,
-        nodeIntegration: false,
-        webviewTag: true
+registerSecurityHandlers()
+
+const hasLock = app.requestSingleInstanceLock()
+if (!hasLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    const existing = Array.from(windows.values())[0]
+    if (existing) {
+      if (existing.window.isMinimized()) existing.window.restore()
+      existing.window.focus()
+    } else {
+      createBrowserWindow()
+    }
+  })
+
+  app.whenReady().then(async () => {
+    initPermissions()
+    await initTabs()
+    await aiSystem.getRegistry().initialize()
+    installApplicationMenu()
+    registerIpc()
+    createBrowserWindow()
+  })
+
+  app.on('activate', () => {
+    if (windows.size === 0) createBrowserWindow()
+  })
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('before-quit', (event) => {
+    if (quitting) return
+    event.preventDefault()
+    quitting = true
+    void (async () => {
+      try {
+        if (getSettings().clearOnExit) {
+          await clearHistory()
+          for (const state of windows.values()) {
+            const ses = session.fromPartition(state.partition)
+            await ses.clearStorageData().catch(() => undefined)
+            await ses.clearCache().catch(() => undefined)
+          }
+        }
+        await aiSystem.shutdown()
+        contextService.dispose()
+        await closeDatabase()
+      } catch (error) {
+        console.error('Shutdown cleanup failed:', error)
+      } finally {
+        app.quit()
       }
-    })
-    win.loadFile(path.join(__dirname, '../renderer/index.html'))
-  }
-})
-
-app.on('before-quit', async () => {
-  globalShortcut.unregisterAll()
-  await aiSystem.shutdown()
-})
+    })()
+  })
+}

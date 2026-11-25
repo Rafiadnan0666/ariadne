@@ -5,11 +5,12 @@
   "type": "commonjs",
   "scripts": {
     "dev": "npm run build:electron && electron .",
-    "build": "tsc && vite build",
+    "build": "npm run build:electron && npm run build:renderer",
     "start": "electron .",
-    "build:electron": "tsc --project tsconfig.main.json && node scripts/copy-assets.js",
+    "build:electron": "tsc --project tsconfig.main.json && tsc --project tsconfig.preload.json && node scripts/copy-assets.js",
     "build:renderer": "vite build",
     "build:preload": "tsc --project tsconfig.preload.json",
+    "typecheck": "tsc --noEmit",
     "test": "tsc --project tsconfig.tests.json && node --test dist-tests/tests/pipeline.test.js"
   },
   "dependencies": {
@@ -28,6 +29,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.13.0",
+    "@types/react-dom": "^19.3.0",
     "@typescript-eslint/eslint-plugin": "^8.18.0",
     "@typescript-eslint/parser": "^8.18.0",
     "@vitejs/plugin-react": "^4.3.3",

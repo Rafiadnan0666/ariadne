@@ -72,7 +72,7 @@ function toTabInfo(tab: TabState, privateTabs: Set<string>, privateSession: bool
     url: tab.url,
     title: tab.title,
     active: tab.active,
-    isPrivate: privateSession || privateTabs.has(tab.id),
+    isPrivate: tab.isPrivate === true || privateSession || privateTabs.has(tab.id),
   };
 }
 
@@ -171,13 +171,15 @@ export class ContextService {
     return this.getState();
   }
 
-  getState(): PickerState {
-    const tabs = getTabs().map((tab) => {
+  getState(windowId?: number): PickerState {
+    const tabs = getTabs(windowId).map((tab) => {
       const info = toTabInfo(tab, this.privateTabs, this.privateSession);
       const cached = this.manager.getCachedForTab(tab.id);
+      const stale = cached.length > 0 && cached.every((item) => normalizeUrl(item.url) !== normalizeUrl(tab.url));
       return {
         tab: { ...info, excluded: this.manager.isExcluded(tab.url) },
         cached: cached.length > 0,
+        stale,
         chars: cached.reduce((sum, item) => sum + item.text.length + (item.selectedText?.length || 0), 0),
         approxTokens: cached.reduce((sum, item) => sum + item.approxTokens, 0),
         isPrivate: info.isPrivate === true,
@@ -202,8 +204,8 @@ export class ContextService {
    * Extract the selected tabs. Same-URL tabs are loaded once, and cached pages
    * are not re-fetched unless `force` is set.
    */
-  async extract(selection: ContextSelection, options: ExtractRequestOptions = {}): Promise<ExtractionBatchResult> {
-    const allTabs = getTabs().map((tab) => toTabInfo(tab, this.privateTabs, this.privateSession));
+  async extract(selection: ContextSelection, options: ExtractRequestOptions = {}, windowId?: number): Promise<ExtractionBatchResult> {
+    const allTabs = getTabs(windowId).map((tab) => toTabInfo(tab, this.privateTabs, this.privateSession));
     const resolved = resolveSelectionTabs(allTabs, selection);
 
     // One network load per normalized URL, no matter how many tabs point at it.
@@ -311,7 +313,7 @@ export class ContextService {
     }
 
     this.manager.compressOlderContext();
-    return { summaries, stats: this.manager.stats(), items: this.getState().items };
+    return { summaries, stats: this.manager.stats(), items: this.getState(windowId).items };
   }
 
   /** Build the exact payload without calling any provider. */

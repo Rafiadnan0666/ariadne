@@ -1,181 +1,246 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
-
-interface SearchSuggestion {
-  type: 'history' | 'bookmark' | 'tab' | 'search' | 'url';
-  text: string;
-  url?: string;
-  title?: string;
-  icon?: string;
-}
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import type { AddressSuggestion } from '../types'
+import { Icon } from './Icon'
 
 interface AddressBarProps {
-  value: string;
-  onChange: (value: string) => void;
-  onSubmit: (value: string) => void;
-  onFocus: () => void;
-  onBlur: () => void;
-  isLoading: boolean;
-  canGoBack: boolean;
-  canGoForward: boolean;
-  onBack: () => void;
-  onForward: () => void;
-  onReload: () => void;
-  onStop: () => void;
-  onHome: () => void;
-  onNewTab: () => void;
-  onToggleAISidebar: () => void;
-  showAISidebar: boolean;
-  suggestions: SearchSuggestion[];
-  showSuggestions: boolean;
+  value: string
+  isLoading: boolean
+  canGoBack: boolean
+  canGoForward: boolean
+  focusToken: number
+  suggestions: AddressSuggestion[]
+  onChange: (query: string) => void
+  onNavigate: (raw: string) => void
+  onSelectSuggestion: (suggestion: AddressSuggestion) => void
+  onFocus: () => void
+  onBlur: () => void
+  onBack: () => void
+  onForward: () => void
+  onReload: () => void
+  onStop: () => void
+  onHome: () => void
 }
+
+function prettyUrl(raw: string): string {
+  if (!raw || raw === 'about:blank') return ''
+  try {
+    const url = new URL(raw)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return raw
+    const path = `${url.pathname}${url.search}${url.hash}`
+    return `${url.host}${path === '/' ? '' : path}`
+  } catch {
+    return raw
+  }
+}
+
+function securityOf(raw: string): 'secure' | 'insecure' | 'internal' {
+  try {
+    const url = new URL(raw)
+    if (url.protocol === 'https:') return 'secure'
+    if (url.protocol === 'http:') return 'insecure'
+    return 'internal'
+  } catch {
+    return 'internal'
+  }
+}
+
+const KIND_ICON = {
+  search: 'search',
+  url: 'globe',
+  history: 'history',
+  bookmark: 'star',
+  tab: 'panel',
+} as const
 
 export const AddressBar: React.FC<AddressBarProps> = ({
   value,
-  onChange,
-  onSubmit,
-  onFocus,
-  onBlur,
   isLoading,
   canGoBack,
   canGoForward,
+  focusToken,
+  suggestions,
+  onChange,
+  onNavigate,
+  onSelectSuggestion,
+  onFocus,
+  onBlur,
   onBack,
   onForward,
   onReload,
   onStop,
   onHome,
-  onNewTab,
-  onToggleAISidebar,
-  showAISidebar,
-  suggestions,
-  showSuggestions,
 }) => {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [selectedIndex, setSelectedIndex] = useState(-1);
-  const [isEditing, setIsEditing] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [draft, setDraft] = useState(value)
+  const [focused, setFocused] = useState(false)
+  const [selectedIndex, setSelectedIndex] = useState(-1)
 
   useEffect(() => {
-    if (showSuggestions && inputRef.current) {
-      inputRef.current.focus();
+    if (!focused) setDraft(value)
+  }, [value, focused])
+
+  useEffect(() => {
+    setSelectedIndex(-1)
+  }, [suggestions])
+
+  useEffect(() => {
+    if (focusToken > 0 && inputRef.current) {
+      setDraft(value)
+      setFocused(true)
+      inputRef.current.focus()
+      inputRef.current.select()
     }
-  }, [showSuggestions]);
+    // Only react to explicit focus requests, not value changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusToken])
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      if (selectedIndex >= 0 && suggestions[selectedIndex]) {
-        const suggestion = suggestions[selectedIndex];
-        if (suggestion.url) {
-          onSubmit(suggestion.url);
-        } else {
-          onSubmit(suggestion.text);
-        }
-      } else {
-        onSubmit(value);
-      }
-      setSelectedIndex(-1);
-    } else if (e.key === 'ArrowDown') {
-      e.preventDefault();
-      setSelectedIndex(prev => Math.min(prev + 1, suggestions.length - 1));
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault();
-      setSelectedIndex(prev => Math.max(prev - 1, -1));
-    } else if (e.key === 'Escape') {
-      setSelectedIndex(-1);
-      inputRef.current?.blur();
-    } else if ((e.ctrlKey || e.metaKey) && e.key === 'l') {
-      e.preventDefault();
-      inputRef.current?.select();
-      setIsEditing(true);
+  const submit = useCallback(
+    (raw: string) => {
+      const trimmed = raw.trim()
+      if (!trimmed) return
+      setFocused(false)
+      setDraft(trimmed)
+      inputRef.current?.blur()
+      onNavigate(trimmed)
+    },
+    [onNavigate]
+  )
+
+  const choose = useCallback(
+    (suggestion: AddressSuggestion) => {
+      setFocused(false)
+      inputRef.current?.blur()
+      if (suggestion.tabId) onSelectSuggestion(suggestion)
+      else submit(suggestion.value)
+    },
+    [onSelectSuggestion, submit]
+  )
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === 'Enter') {
+      event.preventDefault()
+      const selected = selectedIndex >= 0 ? suggestions[selectedIndex] : undefined
+      if (selected) choose(selected)
+      else submit(draft)
+      return
     }
-  }, [value, suggestions, onSubmit, selectedIndex]);
-
-  const handleChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    onChange(e.target.value);
-    setSelectedIndex(-1);
-    setIsEditing(true);
-  }, [onChange]);
-
-  const handleClick = useCallback(() => {
-    setIsEditing(true);
-    inputRef.current?.select();
-  }, []);
-
-  const isValidUrl = (str: string): boolean => {
-    try {
-      const url = new URL(str.startsWith('http') ? str : 'http://' + str);
-      return url.protocol === 'http:' || url.protocol === 'https:';
-    } catch {
-      return false;
+    if (event.key === 'ArrowDown' && suggestions.length > 0) {
+      event.preventDefault()
+      setSelectedIndex((index) => Math.min(index + 1, suggestions.length - 1))
+      return
     }
-  };
-
-  const getDisplayValue = () => {
-    if (isEditing) return value;
-    try {
-      const url = new URL(value);
-      return url.hostname + url.pathname + url.search;
-    } catch {
-      return value;
+    if (event.key === 'ArrowUp' && suggestions.length > 0) {
+      event.preventDefault()
+      setSelectedIndex((index) => Math.max(index - 1, -1))
+      return
     }
-  };
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      setFocused(false)
+      setDraft(value)
+      inputRef.current?.blur()
+    }
+  }
+
+  const security = securityOf(value)
+  const shown = focused ? draft : prettyUrl(value)
 
   return (
-    <div className="address-bar">
-      <div className="address-left">
-        <button className="addr-btn" onClick={onBack} disabled={!canGoBack} title="Back (Alt+Left)" aria-label="Back">←</button>
-        <button className="addr-btn" onClick={onForward} disabled={!canGoForward} title="Forward (Alt+Right)" aria-label="Forward">→</button>
-        <button className="addr-btn" onClick={isLoading ? onStop : onReload} title={isLoading ? 'Stop (Esc)' : 'Reload (F5/Ctrl+R)'} aria-label={isLoading ? 'Stop' : 'Reload'}>
-          {isLoading ? '✕' : '⟳'}
-        </button>
-        <button className="addr-btn" onClick={onHome} title="Home (Alt+Home)" aria-label="Home">🏠</button>
-      </div>
-      <div className="address-center">
-        <div className="address-input-wrapper">
+    <div className="address-wrap">
+      <div className={`address-bar ${focused ? 'focused' : ''}`}>
+        <div className="nav-buttons">
+          <button className="icon-btn" onClick={onBack} disabled={!canGoBack} title="Back (Alt+Left)" aria-label="Back">
+            <Icon name="back" />
+          </button>
+          <button
+            className="icon-btn"
+            onClick={onForward}
+            disabled={!canGoForward}
+            title="Forward (Alt+Right)"
+            aria-label="Forward"
+          >
+            <Icon name="forward" />
+          </button>
+          <button
+            className={`icon-btn ${isLoading ? 'stop' : ''}`}
+            onClick={isLoading ? onStop : onReload}
+            title={isLoading ? 'Stop loading (Esc)' : 'Reload (Ctrl+R)'}
+            aria-label={isLoading ? 'Stop loading' : 'Reload'}
+          >
+            <Icon name={isLoading ? 'stop' : 'reload'} />
+          </button>
+          <button className="icon-btn home-btn" onClick={onHome} title="Home (Alt+Home)" aria-label="Home">
+            <Icon name="home" />
+          </button>
+        </div>
+
+        <div className="address-field">
+          <span
+            className={`security-dot ${security}`}
+            title={
+              security === 'secure'
+                ? 'Connection is encrypted (HTTPS)'
+                : security === 'insecure'
+                  ? 'Connection is not encrypted (HTTP)'
+                  : 'Browser page'
+            }
+          >
+            <Icon name={security === 'secure' ? 'lock' : 'globe'} size={13} />
+          </span>
           <input
             ref={inputRef}
             type="text"
-            className="address-input"
-            value={isEditing ? value : getDisplayValue()}
-            onChange={handleChange}
+            value={shown}
+            onChange={(event) => {
+              setDraft(event.target.value)
+              onChange(event.target.value)
+            }}
             onKeyDown={handleKeyDown}
-            onFocus={() => { onFocus(); setIsEditing(true); }}
-            onBlur={() => { onBlur(); setIsEditing(false); }}
-            onClick={handleClick}
-            placeholder="Enter URL or search"
+            onFocus={() => {
+              setDraft(value)
+              setFocused(true)
+              onFocus()
+              requestAnimationFrame(() => inputRef.current?.select())
+            }}
+            onBlur={() => {
+              window.setTimeout(() => setFocused(false), 120)
+              onBlur()
+            }}
+            placeholder="Search or enter address"
             autoComplete="off"
             spellCheck={false}
-            aria-label="Address bar"
+            aria-label="Address and search bar"
             aria-autocomplete="list"
             aria-controls="address-suggestions"
-            aria-activedescendant={selectedIndex >= 0 ? `suggestion-${selectedIndex}` : undefined}
+            aria-activedescendant={selectedIndex >= 0 ? `address-suggestion-${selectedIndex}` : undefined}
           />
-          {isLoading && <span className="address-loading-indicator" />}
+          {isLoading && <span className="address-spinner" aria-hidden="true" />}
         </div>
-        {showSuggestions && suggestions.length > 0 && (
-          <div className="address-suggestions" id="address-suggestions" role="listbox">
-            {suggestions.map((suggestion, index) => (
-              <div
-                key={index}
-                id={`suggestion-${index}`}
-                className={`address-suggestion ${index === selectedIndex ? 'selected' : ''}`}
-                role="option"
-                aria-selected={index === selectedIndex}
-                onClick={() => {
-                  if (suggestion.url) onSubmit(suggestion.url); else onSubmit(suggestion.text);
-                }}
-              >
-                <span className="suggestion-icon">{suggestion.icon || (suggestion.type === 'search' ? '🔍' : suggestion.type === 'history' ? '🕒' : suggestion.type === 'bookmark' ? '★' : '📄')}</span>
-                <span className="suggestion-text">{suggestion.text}</span>
-                {suggestion.url && suggestion.type !== 'search' && <span className="suggestion-url">{suggestion.url}</span>}
-              </div>
-            ))}
-          </div>
-        )}
       </div>
-      <div className="address-right">
-        <button className="addr-btn" onClick={onNewTab} title="New Tab (Ctrl+T)" aria-label="New Tab">+</button>
-        <button className={`addr-btn ${showAISidebar ? 'active' : ''}`} onClick={onToggleAISidebar} title="AI Sidebar (Ctrl+Shift+A)" aria-label="AI Sidebar" aria-pressed={showAISidebar}>🤖</button>
-      </div>
+
+      {focused && suggestions.length > 0 && (
+        <div className="address-suggestions" id="address-suggestions" role="listbox" aria-label="Suggestions">
+          {suggestions.map((suggestion, index) => (
+            <button
+              key={`${suggestion.kind}-${suggestion.value}-${index}`}
+              id={`address-suggestion-${index}`}
+              type="button"
+              role="option"
+              aria-selected={index === selectedIndex}
+              className={`suggestion-row ${index === selectedIndex ? 'selected' : ''}`}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setSelectedIndex(index)}
+              onClick={() => choose(suggestion)}
+            >
+              <span className={`suggestion-icon ${suggestion.kind}`}>
+                <Icon name={KIND_ICON[suggestion.kind]} size={14} />
+              </span>
+              <span className="suggestion-label">{suggestion.label}</span>
+              {suggestion.detail && <span className="suggestion-detail">{suggestion.detail}</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
-  );
-};
+  )
+}

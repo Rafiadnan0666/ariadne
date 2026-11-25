@@ -223,6 +223,8 @@ export interface ExtractionSummary {
 export interface PickerTabState {
   tab: TabInfo;
   cached: boolean;
+  /** Cached extraction exists for a different URL than the tab currently shows. */
+  stale?: boolean;
   chars: number;
   approxTokens: number;
   isPrivate: boolean;

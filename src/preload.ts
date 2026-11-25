@@ -1,142 +1,234 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+const EVENT_CHANNELS = new Set([
+  'tabs-updated',
+  'tab-updated',
+  'tab-load-error',
+  'download-updated',
+  'download-removed',
+  'downloads-cleared',
+  'shortcut',
+  'permission-request',
+  'settings-updated',
+  'history-cleared',
+  'ai:stream-chunk',
+])
+
+function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
+  return ipcRenderer.invoke(channel, ...args) as Promise<T>
+}
+
+function on(channel: string, callback: (...args: any[]) => void): () => void {
+  if (!EVENT_CHANNELS.has(channel)) throw new Error(`Unknown event channel: ${channel}`)
+  const subscription = (_event: unknown, ...args: any[]) => callback(...args)
+  ipcRenderer.on(channel, subscription)
+  return () => ipcRenderer.removeListener(channel, subscription)
+}
+
+const tab = {
+  create: (url?: string) => invoke<string>('tab:create', url),
+  close: (id: string) => invoke<string | null>('tab:close', id),
+  setActive: (id: string) => invoke<void>('tab:set-active', id),
+  getAll: () => invoke<any[]>('tab:get-all'),
+  navigate: (id: string, url: string) => invoke<void>('tab:navigate', id, url),
+  setWebContents: (id: string, webContentsId: number) => invoke<void>('tab:set-web-contents', id, webContentsId),
+  back: () => invoke<void>('tab:back'),
+  forward: () => invoke<void>('tab:forward'),
+  reload: () => invoke<void>('tab:reload'),
+  stop: () => invoke<void>('tab:stop'),
+  forceReload: () => invoke<void>('tab:force-reload'),
+  devtools: () => invoke<void>('tab:devtools'),
+  duplicate: (id: string) => invoke<string | null>('tab:duplicate', id),
+  pin: (id: string) => invoke<boolean>('tab:pin', id),
+  mute: (id: string) => invoke<boolean>('tab:mute', id),
+  reorder: (fromIndex: number, toIndex: number) => invoke<void>('tab:reorder', fromIndex, toIndex),
+  reopenClosed: () => invoke<string | null>('tab:reopen-closed'),
+  getClosed: () => invoke<any[]>('tab:get-closed'),
+  setZoom: (id: string, factor: number) => invoke<void>('tab:set-zoom', id, factor),
+  getZoom: (id: string) => invoke<number>('tab:get-zoom', id),
+  findInPage: (id: string, text: string, options?: { forward?: boolean; findNext?: boolean }) =>
+    invoke<any>('tab:find-in-page', id, text, options),
+  stopFinding: (id: string, action: 'clear' | 'keep' | 'activate') => invoke<void>('tab:stop-finding', id, action),
+  print: (id: string) => invoke<void>('tab:print', id),
+  viewSource: (id: string) => invoke<string | null>('tab:view-source', id),
+  fullscreen: () => invoke<void>('tab:fullscreen'),
+}
+
+const downloads = {
+  get: () => invoke<any[]>('downloads:get'),
+  pause: (id: string) => invoke<boolean>('downloads:pause', id),
+  resume: (id: string) => invoke<boolean>('downloads:resume', id),
+  cancel: (id: string) => invoke<boolean>('downloads:cancel', id),
+  remove: (id: string) => invoke<void>('downloads:remove', id),
+  open: (id: string) => invoke<void>('downloads:open', id),
+  showInFolder: (id: string) => invoke<void>('downloads:show-in-folder', id),
+  retry: (id: string) => invoke<boolean>('downloads:retry', id),
+  clear: () => invoke<void>('downloads:clear'),
+  getPath: () => invoke<string>('downloads:get-path'),
+  setPath: (directory: string) => invoke<void>('downloads:set-path', directory),
+}
+
+const settings = {
+  get: () => invoke<any>('settings:get'),
+  set: (patch: Record<string, unknown>) => invoke<any>('settings:set', patch),
+}
+
+const history = {
+  get: () => invoke<any[]>('history:get'),
+  add: (url: string, title: string) => invoke<void>('history:add', url, title),
+  remove: (id: number) => invoke<void>('history:delete', id),
+  clear: (options?: { since?: number }) => invoke<void>('history:clear', options),
+}
+
+const bookmarks = {
+  get: () => invoke<any[]>('bookmarks:get'),
+  add: (bookmark: { title: string; url: string; folderId?: string }) => invoke<any>('bookmarks:add', bookmark),
+  addFolder: (title: string, parentId?: string) => invoke<any>('bookmarks:add-folder', title, parentId),
+  update: (id: string, updates: { title?: string; url?: string }) => invoke<any>('bookmarks:update', id, updates),
+  remove: (id: string) => invoke<void>('bookmarks:delete', id),
+  move: (id: string, parentId: string, index?: number) => invoke<any>('bookmarks:move', id, parentId, index),
+  import: (html: string) => invoke<{ imported: number }>('bookmarks:import', html),
+  export: () => invoke<string>('bookmarks:export'),
+}
+
+const permissions = {
+  respond: (id: string, decision: 'grant' | 'deny', remember: boolean) =>
+    invoke<boolean>('permission:respond', id, decision, remember),
+  getDecisions: () => invoke<Record<string, 'grant' | 'deny'>>('permission:get-decisions'),
+  clear: (origin?: string) => invoke<void>('permission:clear', origin),
+}
+
+const windowApi = {
+  create: (options?: { private?: boolean; url?: string }) => invoke<number>('window:create', options),
+  close: () => invoke<void>('window:close'),
+  minimize: () => invoke<void>('window:minimize'),
+  maximize: () => invoke<void>('window:maximize'),
+  isMaximized: () => invoke<boolean>('window:is-maximized'),
+  getInfo: () => invoke<{ id: number; isPrivate: boolean; partition: string }>('window:info'),
+}
+
+const ai = {
+  getConfig: () => invoke<any>('ai:config:get'),
+  updateConfig: (updates: any) => invoke<any>('ai:config:update', updates),
+  getProviders: () => invoke<any[]>('ai:providers:list'),
+  addProvider: (config: any, apiKey?: string) => invoke<any>('ai:provider:add', config, apiKey),
+  removeProvider: (id: string) => invoke<any>('ai:provider:remove', id),
+  testProvider: (id: string, apiKey?: string) => invoke<{ success: boolean; error?: string }>('ai:provider:test', id, apiKey),
+  setApiKey: (providerId: string, keyName: string, apiKey: string) =>
+    invoke<any>('ai:provider:set-key', providerId, keyName, apiKey),
+  getMaskedKey: (providerId: string, keyName: string) =>
+    invoke<string | null>('ai:provider:get-masked-key', providerId, keyName),
+  getModels: () => invoke<any[]>('ai:models:list'),
+  getModelsForProvider: (providerId: string) => invoke<any[]>('ai:models:for-provider', providerId),
+  getModelSlots: () => invoke<Record<string, string>>('ai:model-slot:get-all'),
+  setModelSlot: (slot: string, modelId: string) => invoke<any>('ai:model-slot:set', slot, modelId),
+  getModelSlot: (slot: string) => invoke<string>('ai:model-slot:get', slot),
+  getModelForSlot: (slot: string) => invoke<any>('ai:model-slot:get-model', slot),
+  getProviderTypes: () => invoke<string[]>('ai:provider-types'),
+  getSystemPrompt: () => invoke<string>('ai:system-prompt:get'),
+  setSystemPrompt: (prompt: string) => invoke<any>('ai:system-prompt:set', prompt),
+  chatComplete: (request: any) => invoke<any>('ai:chat:complete', request),
+  chatStream: (request: any, requestId: string) => invoke<any>('ai:chat:stream', request, requestId),
+  cancelChat: () => invoke<void>('ai:chat:cancel'),
+  onStreamChunk: (callback: (payload: { requestId: string; chunk: any }) => void) => on('ai:stream-chunk', callback),
+  extractPage: (tabId: string) => invoke<any>('ai:extract-page', tabId),
+  getTabsContext: (tabIds: string[]) => invoke<string>('ai:get-tabs-context', tabIds),
+  contextRetrieve: (query: string, tabIds?: string[]) => invoke<any>('ai:context:retrieve', query, tabIds),
+  contextFormat: (query: string, tabIds?: string[]) => invoke<string>('ai:context:format', query, tabIds),
+  contextIngest: (tabId: string) => invoke<void>('ai:context:ingest', tabId),
+  getUsage: (providerId?: string, since?: number) => invoke<any[]>('ai:usage', providerId, since),
+  getTotalUsage: (since?: number) => invoke<any>('ai:usage-total', since),
+}
+
+const context = {
+  getState: () => invoke<any>('context:get-state'),
+  extract: (selection: any, options?: any) => invoke<any>('context:extract', selection, options),
+  preview: (question: string, tabIds?: string[], maxChunks?: number) =>
+    invoke<any>('context:preview', question, tabIds, maxChunks),
+  ask: (payloadHash: string) => invoke<any>('context:ask', payloadHash),
+  setExclusions: (hosts: string[]) => invoke<any>('context:set-exclusions', hosts),
+  setPrivateSession: (enabled: boolean) => invoke<any>('context:set-private-session', enabled),
+  clearPrivate: () => invoke<any>('context:clear-private'),
+  clear: () => invoke<any>('context:clear'),
+  removeItem: (itemId: string) => invoke<any>('context:remove-item', itemId),
+  removeTab: (tabId: string) => invoke<any>('context:remove-tab', tabId),
+  getItemText: (itemId: string) => invoke<any>('context:get-item-text', itemId),
+  screenshot: (tabId: string) => invoke<any>('context:screenshot', tabId),
+  markTabPrivate: (tabId: string, isPrivate: boolean) => invoke<any>('context:mark-tab-private', tabId, isPrivate),
+}
+
+const appApi = {
+  getInfo: () => invoke<any>('app:info'),
+  openExternal: (url: string) => invoke<void>('app:open-external', url),
+  clearBrowsingData: (options?: { history?: boolean; cookies?: boolean; cache?: boolean; permissions?: boolean }) =>
+    invoke<boolean>('privacy:clear-data', options),
+}
+
 contextBridge.exposeInMainWorld('electronAPI', {
-  // Tab management
-  createTab: (url?: string) => ipcRenderer.invoke('tab:create', url),
-  closeTab: (id: string) => ipcRenderer.invoke('tab:close', id),
-  setActiveTab: (id: string) => ipcRenderer.invoke('tab:set-active', id),
-  getTabs: () => ipcRenderer.invoke('tab:get-all'),
-  setUrl: (id: string, url: string) => ipcRenderer.invoke('tab:url', id, url),
-  setTabWebContents: (id: string, webContentsId: number) => ipcRenderer.invoke('tab:set-web-contents', id, webContentsId),
-  setTabTitle: (id: string, title: string) => ipcRenderer.invoke('tab:set-title', id, title),
-  back: () => ipcRenderer.invoke('tab:back'),
-  forward: () => ipcRenderer.invoke('tab:forward'),
-  reload: () => ipcRenderer.invoke('tab:reload'),
-  stop: () => ipcRenderer.invoke('tab:stop'),
-  duplicateTab: (id: string) => ipcRenderer.invoke('tab:duplicate', id),
-  pinTab: (id: string) => ipcRenderer.invoke('tab:pin', id),
-  muteTab: (id: string) => ipcRenderer.invoke('tab:mute', id),
-  reorderTab: (fromIndex: number, toIndex: number) => ipcRenderer.invoke('tab:reorder', fromIndex, toIndex),
-  reopenClosedTab: () => ipcRenderer.invoke('tab:reopen-closed'),
-  getClosedTabs: () => ipcRenderer.invoke('tab:get-closed'),
-  setTabZoom: (id: string, factor: number) => ipcRenderer.invoke('tab:set-zoom', id, factor),
-  getTabZoom: (id: string) => ipcRenderer.invoke('tab:get-zoom', id),
-  findInPage: (id: string, text: string, options?: { forward?: boolean; matchCase?: boolean }) => ipcRenderer.invoke('tab:find-in-page', id, text, options),
-  stopFinding: (id: string, action: 'clear' | 'keep' | 'activate') => ipcRenderer.invoke('tab:stop-finding', id, action),
-  print: (id: string) => ipcRenderer.invoke('tab:print', id),
-  viewSource: (id: string) => ipcRenderer.invoke('tab:view-source', id),
-  fullscreen: (id: string) => ipcRenderer.invoke('tab:fullscreen', id),
+  // Namespaced API
+  tab,
+  downloads,
+  settings,
+  history,
+  bookmarks,
+  permissions,
+  window: windowApi,
+  ai,
+  context,
+  app: appApi,
 
-  // History
-  getHistory: () => ipcRenderer.invoke('history:get'),
-  addHistory: (url: string, title: string) => ipcRenderer.invoke('history:add', url, title),
-  deleteHistoryEntry: (id: number) => ipcRenderer.invoke('history:delete', id),
-  clearHistory: (options?: { since?: number }) => ipcRenderer.invoke('history:clear', options),
+  // Backwards-compatible flat aliases used by older components.
+  createTab: tab.create,
+  closeTab: tab.close,
+  setActiveTab: tab.setActive,
+  getTabs: tab.getAll,
+  setUrl: tab.navigate,
+  setTabWebContents: tab.setWebContents,
+  back: tab.back,
+  forward: tab.forward,
+  reload: tab.reload,
+  stop: tab.stop,
+  duplicateTab: tab.duplicate,
+  pinTab: tab.pin,
+  muteTab: tab.mute,
+  reorderTab: tab.reorder,
+  reopenClosedTab: tab.reopenClosed,
+  getClosedTabs: tab.getClosed,
+  setTabZoom: tab.setZoom,
+  getTabZoom: tab.getZoom,
+  findInPage: tab.findInPage,
+  stopFinding: tab.stopFinding,
+  print: tab.print,
+  fullscreen: tab.fullscreen,
+  getHistory: history.get,
+  addHistory: history.add,
+  deleteHistoryEntry: history.remove,
+  clearHistory: history.clear,
+  getBookmarks: bookmarks.get,
+  addBookmark: bookmarks.add,
+  addBookmarkFolder: bookmarks.addFolder,
+  updateBookmark: bookmarks.update,
+  deleteBookmark: bookmarks.remove,
+  moveBookmark: bookmarks.move,
+  importBookmarks: bookmarks.import,
+  exportBookmarks: bookmarks.export,
+  getDownloads: downloads.get,
+  pauseDownload: downloads.pause,
+  resumeDownload: downloads.resume,
+  cancelDownload: downloads.cancel,
+  removeDownload: downloads.remove,
+  openDownload: downloads.open,
+  showDownloadInFolder: downloads.showInFolder,
+  retryDownload: downloads.retry,
+  clearDownloads: downloads.clear,
+  getDownloadPath: downloads.getPath,
+  setDownloadPath: downloads.setPath,
+  createWindow: windowApi.create,
+  closeWindow: windowApi.close,
+  minimizeWindow: windowApi.minimize,
+  maximizeWindow: windowApi.maximize,
+  isMaximized: windowApi.isMaximized,
 
-  // Bookmarks
-  getBookmarks: () => ipcRenderer.invoke('bookmarks:get'),
-  addBookmark: (bookmark: { title: string; url: string; folderId?: string }) => ipcRenderer.invoke('bookmarks:add', bookmark),
-  addBookmarkFolder: (title: string, parentId?: string) => ipcRenderer.invoke('bookmarks:add-folder', title, parentId),
-  updateBookmark: (id: string, updates: { title?: string; url?: string }) => ipcRenderer.invoke('bookmarks:update', id, updates),
-  deleteBookmark: (id: string) => ipcRenderer.invoke('bookmarks:delete', id),
-  moveBookmark: (id: string, parentId: string, index?: number) => ipcRenderer.invoke('bookmarks:move', id, parentId, index),
-  importBookmarks: (html: string) => ipcRenderer.invoke('bookmarks:import', html),
-  exportBookmarks: () => ipcRenderer.invoke('bookmarks:export'),
-
-  // Downloads
-  getDownloads: () => ipcRenderer.invoke('downloads:get'),
-  pauseDownload: (id: string) => ipcRenderer.invoke('downloads:pause', id),
-  resumeDownload: (id: string) => ipcRenderer.invoke('downloads:resume', id),
-  cancelDownload: (id: string) => ipcRenderer.invoke('downloads:cancel', id),
-  removeDownload: (id: string) => ipcRenderer.invoke('downloads:remove', id),
-  openDownload: (id: string) => ipcRenderer.invoke('downloads:open', id),
-  showDownloadInFolder: (id: string) => ipcRenderer.invoke('downloads:show-in-folder', id),
-  retryDownload: (id: string) => ipcRenderer.invoke('downloads:retry', id),
-  clearDownloads: () => ipcRenderer.invoke('downloads:clear'),
-  setDownloadPath: (path: string) => ipcRenderer.invoke('downloads:set-path', path),
-  getDownloadPath: () => ipcRenderer.invoke('downloads:get-path'),
-
-  // Permissions
-  requestPermission: (tabId: string, permission: string) => ipcRenderer.invoke('permission:request', tabId, permission),
-  getPermissions: (origin: string) => ipcRenderer.invoke('permission:get', origin),
-  setPermission: (origin: string, permission: string, setting: 'grant' | 'deny' | 'ask') => ipcRenderer.invoke('permission:set', origin, permission, setting),
-  clearPermissions: (origin?: string) => ipcRenderer.invoke('permission:clear', origin),
-
-  // Windows
-  createWindow: (options?: { private?: boolean; url?: string }) => ipcRenderer.invoke('window:create', options),
-  closeWindow: () => ipcRenderer.invoke('window:close'),
-  minimizeWindow: () => ipcRenderer.invoke('window:minimize'),
-  maximizeWindow: () => ipcRenderer.invoke('window:maximize'),
-  isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
-
-  // AI System
-  ai: {
-    // Config
-    getConfig: () => ipcRenderer.invoke('ai:config:get'),
-    updateConfig: (updates: any) => ipcRenderer.invoke('ai:config:update', updates),
-
-    // Providers
-    getProviders: () => ipcRenderer.invoke('ai:providers:list'),
-    addProvider: (config: any, apiKey?: string) => ipcRenderer.invoke('ai:provider:add', config, apiKey),
-    removeProvider: (id: string) => ipcRenderer.invoke('ai:provider:remove', id),
-    testProvider: (id: string, apiKey?: string) => ipcRenderer.invoke('ai:provider:test', id, apiKey),
-    setApiKey: (providerId: string, keyName: string, apiKey: string) => ipcRenderer.invoke('ai:provider:set-key', providerId, keyName, apiKey),
-    getMaskedKey: (providerId: string, keyName: string) => ipcRenderer.invoke('ai:provider:get-masked-key', providerId, keyName),
-
-    // Models
-    getModels: () => ipcRenderer.invoke('ai:models:list'),
-    getModelsForProvider: (providerId: string) => ipcRenderer.invoke('ai:models:for-provider', providerId),
-    getModelSlots: () => ipcRenderer.invoke('ai:model-slot:get-all'),
-    setModelSlot: (slot: string, modelId: string) => ipcRenderer.invoke('ai:model-slot:set', slot, modelId),
-    getModelSlot: (slot: string) => ipcRenderer.invoke('ai:model-slot:get', slot),
-    getModelForSlot: (slot: string) => ipcRenderer.invoke('ai:model-slot:get-model', slot),
-
-    // Provider types
-    getProviderTypes: () => ipcRenderer.invoke('ai:provider-types'),
-
-    // System prompt
-    getSystemPrompt: () => ipcRenderer.invoke('ai:system-prompt:get'),
-    setSystemPrompt: (prompt: string) => ipcRenderer.invoke('ai:system-prompt:set', prompt),
-
-    // Chat
-    chatComplete: (request: any) => ipcRenderer.invoke('ai:chat:complete', request),
-    chatStream: (request: any) => ipcRenderer.invoke('ai:chat:stream', request),
-    onStreamChunk: (callback: (chunk: any) => void) => {
-      const handler = (_e: any, chunk: any) => callback(chunk)
-      ipcRenderer.on('ai:stream-chunk', handler)
-      return () => ipcRenderer.removeListener('ai:stream-chunk', handler)
-    },
-
-    // Page Extraction
-    extractPage: (tabId: string) => ipcRenderer.invoke('ai:extract-page', tabId),
-    getTabsContext: (tabIds: string[]) => ipcRenderer.invoke('ai:get-tabs-context', tabIds),
-
-    // Context Retrieval
-    contextRetrieve: (query: string, tabIds?: string[]) => ipcRenderer.invoke('ai:context:retrieve', query, tabIds),
-    contextFormat: (query: string, tabIds?: string[]) => ipcRenderer.invoke('ai:context:format', query, tabIds),
-    contextIngest: (tabId: string) => ipcRenderer.invoke('ai:context:ingest', tabId),
-
-    // Usage
-    getUsage: (providerId?: string, since?: number) => ipcRenderer.invoke('ai:usage', providerId, since),
-    getTotalUsage: (since?: number) => ipcRenderer.invoke('ai:usage-total', since),
-  },
-
-  // Context Menu
-  showContextMenu: (menu: any) => ipcRenderer.invoke('context-menu:show', menu),
-
-  // Events
-  on: (channel: string, callback: (...args: any[]) => void) => {
-    const subscription = (_event: any, ...args: any[]) => callback(...args)
-    ipcRenderer.on(channel, subscription)
-    return () => ipcRenderer.removeListener(channel, subscription)
-  },
-  once: (channel: string, callback: (...args: any[]) => void) => {
-    const subscription = (_event: any, ...args: any[]) => callback(...args)
-    ipcRenderer.once(channel, subscription)
-    return () => ipcRenderer.removeListener(channel, subscription)
-  },
-  off: (channel: string, callback: (...args: any[]) => void) => {
-    ipcRenderer.removeListener(channel, callback)
-  },
-  ready: () => ipcRenderer.invoke('app:ready'),
+  on,
+  ready: () => invoke('app:info'),
 })

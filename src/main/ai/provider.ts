@@ -26,6 +26,7 @@ export interface ProviderAdapter {
 
   chatCompletion(request: ChatCompletionRequest): Promise<ChatCompletionResponse>;
   chatCompletionStream(request: ChatCompletionRequest, onChunk: StreamCallback): Promise<void>;
+  cancelActiveRequest?(): void;
 
   listModels(): Promise<ModelMetadata[]>;
   healthCheck(): Promise<ProviderHealth>;
@@ -38,6 +39,7 @@ export abstract class BaseProvider implements ProviderAdapter {
   readonly config: ProviderConfig;
   protected apiKey: string | null = null;
   protected abortController: AbortController | null = null;
+  private abortReason: 'timeout' | 'cancelled' | null = null;
 
   constructor(config: ProviderConfig) {
     this.config = config;
@@ -53,6 +55,12 @@ export abstract class BaseProvider implements ProviderAdapter {
   }
 
   async shutdown(): Promise<void> {
+    this.abortReason = 'cancelled';
+    this.abortController?.abort();
+  }
+
+  cancelActiveRequest(): void {
+    this.abortReason = 'cancelled';
     this.abortController?.abort();
   }
 
@@ -98,7 +106,11 @@ export abstract class BaseProvider implements ProviderAdapter {
     timeoutMs: number
   ): Promise<Response> {
     this.abortController = new AbortController();
-    const timeoutId = setTimeout(() => this.abortController?.abort(), timeoutMs);
+    this.abortReason = null;
+    const timeoutId = setTimeout(() => {
+      this.abortReason = 'timeout';
+      this.abortController?.abort();
+    }, timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -118,7 +130,11 @@ export abstract class BaseProvider implements ProviderAdapter {
     timeoutMs: number
   ): Promise<void> {
     this.abortController = new AbortController();
-    const timeoutId = setTimeout(() => this.abortController?.abort(), timeoutMs);
+    this.abortReason = null;
+    const timeoutId = setTimeout(() => {
+      this.abortReason = 'timeout';
+      this.abortController?.abort();
+    }, timeoutMs);
 
     try {
       const response = await fetch(url, {
@@ -161,6 +177,7 @@ export abstract class BaseProvider implements ProviderAdapter {
       }
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
+        if (this.abortReason === 'cancelled') throw new Error('CANCELLED');
         throw new Error('Request timeout');
       }
       throw this.transformStreamError(error);

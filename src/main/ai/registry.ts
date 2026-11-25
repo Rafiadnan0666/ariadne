@@ -325,9 +325,17 @@ export class ProviderRegistry {
         usage: accumulatedUsage,
       };
     } catch (error) {
+      if (error instanceof Error && error.message === 'CANCELLED') throw error;
       const fallbackResponse = await this.handleErrorAndFallback(error, request, modelId, startTime);
       // For streaming fallback, we'd need to re-stream - simplified for now
       return fallbackResponse;
+    }
+  }
+
+  /** Abort any in-flight provider request (used by the chat Stop button). */
+  cancelActiveRequests(): void {
+    for (const provider of this.providers.values()) {
+      provider.cancelActiveRequest?.();
     }
   }
 

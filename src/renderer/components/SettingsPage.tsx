@@ -1,410 +1,443 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useEffect, useMemo, useState } from 'react'
+import type { AppInfoDTO, AppSettingsDTO, SearchEngineDTO } from '../types'
+import { Icon, type IconName } from './Icon'
+
+export type SettingsSection =
+  | 'general'
+  | 'appearance'
+  | 'search'
+  | 'privacy'
+  | 'shortcuts'
+  | 'ai'
+  | 'about'
 
 interface SettingsPageProps {
-  isOpen: boolean;
-  onClose: () => void;
+  isOpen: boolean
+  onClose: () => void
+  initialSection: SettingsSection
+  settings: AppSettingsDTO
+  searchEngines: SearchEngineDTO[]
+  appInfo: AppInfoDTO | null
+  onSave: (patch: Partial<AppSettingsDTO>) => Promise<void>
+  onClearData: (options: { history?: boolean; cookies?: boolean; cache?: boolean; permissions?: boolean }) => Promise<void>
+  onOpenAI: () => void
 }
 
-const DEFAULT_SHORTCUTS = [
-  { action: 'New Tab', keys: 'Ctrl+T', editable: true },
-  { action: 'New Window', keys: 'Ctrl+N', editable: true },
-  { action: 'New Private Window', keys: 'Ctrl+Shift+N', editable: true },
-  { action: 'Close Tab', keys: 'Ctrl+W', editable: true },
-  { action: 'Reopen Closed Tab', keys: 'Ctrl+Shift+T', editable: true },
-  { action: 'Next Tab', keys: 'Ctrl+Tab', editable: true },
-  { action: 'Previous Tab', keys: 'Ctrl+Shift+Tab', editable: true },
-  { action: 'Focus Address Bar', keys: 'Ctrl+L / F6', editable: true },
-  { action: 'Find in Page', keys: 'Ctrl+F', editable: true },
-  { action: 'Find Next', keys: 'F3 / Ctrl+G', editable: true },
-  { action: 'Find Previous', keys: 'Shift+F3 / Ctrl+Shift+G', editable: true },
-  { action: 'Reload', keys: 'F5 / Ctrl+R', editable: true },
-  { action: 'Force Reload', keys: 'Ctrl+Shift+R', editable: true },
-  { action: 'Stop Loading', keys: 'Esc', editable: true },
-  { action: 'Go Back', keys: 'Alt+Left', editable: true },
-  { action: 'Go Forward', keys: 'Alt+Right', editable: true },
-  { action: 'Home', keys: 'Alt+Home', editable: true },
-  { action: 'Open Downloads', keys: 'Ctrl+J', editable: true },
-  { action: 'Open History', keys: 'Ctrl+H', editable: true },
-  { action: 'Open Bookmarks', keys: 'Ctrl+Shift+B', editable: true },
-  { action: 'Toggle AI Sidebar', keys: 'Ctrl+Shift+A', editable: true },
-  { action: 'Open DevTools', keys: 'F12 / Ctrl+Shift+I', editable: true },
-  { action: 'Zoom In', keys: 'Ctrl++', editable: true },
-  { action: 'Zoom Out', keys: 'Ctrl+-', editable: true },
-  { action: 'Reset Zoom', keys: 'Ctrl+0', editable: true },
-  { action: 'Fullscreen', keys: 'F11', editable: true },
-  { action: 'Print', keys: 'Ctrl+P', editable: true },
-  { action: 'View Source', keys: 'Ctrl+U', editable: true },
-];
+const SECTIONS: Array<{ id: SettingsSection; label: string; icon: IconName }> = [
+  { id: 'general', label: 'General', icon: 'settings' },
+  { id: 'appearance', label: 'Appearance', icon: 'panel' },
+  { id: 'search', label: 'Search', icon: 'search' },
+  { id: 'privacy', label: 'Privacy', icon: 'shield' },
+  { id: 'shortcuts', label: 'Shortcuts', icon: 'copy' },
+  { id: 'ai', label: 'AI', icon: 'sparkle' },
+  { id: 'about', label: 'About', icon: 'globe' },
+]
 
-export const SettingsPage: React.FC<SettingsPageProps> = ({ isOpen, onClose }) => {
-  const [activeSection, setActiveSection] = useState<'general' | 'appearance' | 'search' | 'privacy' | 'shortcuts' | 'ai' | 'about'>('general');
-  const [settings, setSettings] = useState({
-    theme: 'dark' as 'light' | 'dark' | 'system',
-    accentColor: '#4285f4',
-    density: 'normal' as 'compact' | 'normal' | 'comfortable',
-    showBookmarksBar: true,
-    homePage: 'https://example.com',
-    defaultSearchEngine: 'google',
-    searchSuggestions: true,
-    clearOnExit: false,
-    doNotTrack: true,
-    blockThirdPartyCookies: false,
-    hardwareAcceleration: true,
-    shortcuts: DEFAULT_SHORTCUTS,
-  });
-  const [editingShortcut, setEditingShortcut] = useState<string | null>(null);
-  const [editKeys, setEditKeys] = useState('');
+const SHORTCUTS: Array<[string, string]> = [
+  ['New tab', 'Ctrl+T'],
+  ['New window', 'Ctrl+N'],
+  ['New private window', 'Ctrl+Shift+N'],
+  ['Close tab', 'Ctrl+W'],
+  ['Reopen closed tab', 'Ctrl+Shift+T'],
+  ['Next tab', 'Ctrl+Tab'],
+  ['Previous tab', 'Ctrl+Shift+Tab'],
+  ['Focus address bar', 'Ctrl+L'],
+  ['Find in page', 'Ctrl+F'],
+  ['Find next / previous', 'F3 / Shift+F3'],
+  ['Reload', 'Ctrl+R'],
+  ['Force reload', 'Ctrl+Shift+R'],
+  ['Stop loading', 'Esc'],
+  ['Back / forward', 'Alt+Left / Alt+Right'],
+  ['Home', 'Alt+Home'],
+  ['History', 'Ctrl+H'],
+  ['Downloads', 'Ctrl+J'],
+  ['Bookmarks bar', 'Ctrl+Shift+B'],
+  ['AI sidebar', 'Ctrl+Shift+A'],
+  ['Zoom in / out / reset', 'Ctrl+= / Ctrl+- / Ctrl+0'],
+  ['Full screen', 'F11'],
+  ['Print', 'Ctrl+P'],
+  ['View source', 'Ctrl+U'],
+  ['Developer tools', 'F12'],
+]
 
-  const sections = [
-    { id: 'general', label: 'General', icon: '⚙' },
-    { id: 'appearance', label: 'Appearance', icon: '🎨' },
-    { id: 'search', label: 'Search', icon: '🔍' },
-    { id: 'privacy', label: 'Privacy & Security', icon: '🔒' },
-    { id: 'shortcuts', label: 'Shortcuts', icon: '⌨' },
-    { id: 'ai', label: 'AI', icon: '🤖' },
-    { id: 'about', label: 'About', icon: 'ℹ' },
-  ];
+const ACCENTS = ['#7aa2f7', '#8fbf8f', '#d7a86e', '#c98bb9', '#7ec8c8', '#b8b8c8']
 
-  const searchEngines = [
-    { id: 'google', name: 'Google', url: 'https://www.google.com/search?q=%s', keyword: 'g' },
-    { id: 'duckduckgo', name: 'DuckDuckGo', url: 'https://duckduckgo.com/?q=%s', keyword: 'd' },
-    { id: 'bing', name: 'Bing', url: 'https://www.bing.com/search?q=%s', keyword: 'b' },
-    { id: 'brave', name: 'Brave Search', url: 'https://search.brave.com/search?q=%s', keyword: 'br' },
-    { id: 'startpage', name: 'Startpage', url: 'https://www.startpage.com/sp/search?q=%s', keyword: 'sp' },
-    { id: 'wikipedia', name: 'Wikipedia', url: 'https://en.wikipedia.org/w/index.php?search=%s', keyword: 'w' },
-  ];
+export const SettingsPage: React.FC<SettingsPageProps> = ({
+  isOpen,
+  onClose,
+  initialSection,
+  settings,
+  searchEngines,
+  appInfo,
+  onSave,
+  onClearData,
+  onOpenAI,
+}) => {
+  const [section, setSection] = useState<SettingsSection>(initialSection)
+  const [draft, setDraft] = useState<AppSettingsDTO>(settings)
+  const [saving, setSaving] = useState(false)
+  const [status, setStatus] = useState<{ kind: 'info' | 'error' | 'success'; text: string } | null>(null)
+  const [clearOptions, setClearOptions] = useState({ history: true, cookies: false, cache: true, permissions: false })
+
+  useEffect(() => {
+    if (isOpen) {
+      setSection(initialSection)
+      setDraft(settings)
+      setStatus(null)
+    }
+  }, [isOpen, initialSection, settings])
+
+  const dirty = useMemo(() => JSON.stringify(draft) !== JSON.stringify(settings), [draft, settings])
+
+  if (!isOpen) return null
+
+  const patch = (updates: Partial<AppSettingsDTO>) => setDraft((current) => ({ ...current, ...updates }))
+
+  const save = async () => {
+    setSaving(true)
+    setStatus(null)
+    try {
+      await onSave(draft)
+      setStatus({ kind: 'success', text: 'Settings saved.' })
+    } catch (error) {
+      setStatus({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const clearData = async () => {
+    if (!window.confirm('Clear the selected browsing data for this window?')) return
+    setSaving(true)
+    setStatus(null)
+    try {
+      await onClearData(clearOptions)
+      setStatus({ kind: 'success', text: 'Selected data cleared.' })
+    } catch (error) {
+      setStatus({ kind: 'error', text: error instanceof Error ? error.message : String(error) })
+    } finally {
+      setSaving(false)
+    }
+  }
 
   return (
-    <div className="settings-page-overlay" onClick={onClose}>
-      <div className="settings-page" onClick={e => e.stopPropagation()}>
-        <div className="settings-header">
-          <h2>Settings</h2>
-          <button className="settings-close" onClick={onClose}>✕</button>
-        </div>
-        <div className="settings-body">
-          <nav className="settings-nav">
-            {sections.map(section => (
+    <div className="overlay" onMouseDown={onClose}>
+      <div className="settings-dialog" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label="Settings">
+        <header className="dialog-header">
+          <div>
+            <h2>Settings</h2>
+            <p>Changes are stored in your local profile.</p>
+          </div>
+          <div className="dialog-header-actions">
+            {dirty && <span className="dirty-dot" title="Unsaved changes" />}
+            <button className="primary-btn small" disabled={!dirty || saving} onClick={() => void save()}>
+              {saving ? 'Saving…' : 'Save changes'}
+            </button>
+            <button className="icon-btn" onClick={onClose} title="Close settings">
+              <Icon name="close" />
+            </button>
+          </div>
+        </header>
+
+        <div className="settings-layout">
+          <nav className="settings-nav" aria-label="Settings sections">
+            {SECTIONS.map((item) => (
               <button
-                key={section.id}
-                className={`settings-nav-item ${activeSection === section.id ? 'active' : ''}`}
-                onClick={() => setActiveSection(section.id as typeof activeSection)}
+                key={item.id}
+                className={`settings-nav-item ${section === item.id ? 'active' : ''}`}
+                onClick={() => setSection(item.id)}
               >
-                <span>{section.icon}</span>
-                <span>{section.label}</span>
+                <Icon name={item.icon} size={15} />
+                {item.label}
               </button>
             ))}
           </nav>
+
           <div className="settings-content">
-            {activeSection === 'general' && (
-              <div className="settings-section">
-                <h3>General</h3>
-                <div className="setting-group">
-                  <label>Homepage</label>
+            {status && <div className={`settings-status ${status.kind}`}>{status.text}</div>}
+
+            {section === 'general' && (
+              <section className="settings-section">
+                <h3>Startup and navigation</h3>
+                <label className="field">
+                  <span>Homepage</span>
                   <input
-                    type="text"
-                    value={settings.homePage}
-                    onChange={e => setSettings(s => ({ ...s, homePage: e.target.value }))}
-                    placeholder="https://example.com"
+                    value={draft.homePage}
+                    onChange={(event) => patch({ homePage: event.target.value })}
+                    placeholder="about:blank"
                   />
-                </div>
-                <div className="setting-group">
-                  <label>Default Search Engine</label>
+                  <small>Use about:blank for a new-tab page, or an https:// address.</small>
+                </label>
+                <label className="field">
+                  <span>Default search engine</span>
                   <select
-                    value={settings.defaultSearchEngine}
-                    onChange={e => setSettings(s => ({ ...s, defaultSearchEngine: e.target.value }))}
+                    value={draft.defaultSearchEngine}
+                    onChange={(event) => patch({ defaultSearchEngine: event.target.value })}
                   >
-                    {searchEngines.map(engine => (
-                      <option key={engine.id} value={engine.id}>{engine.name}</option>
+                    {searchEngines.map((engine) => (
+                      <option key={engine.id} value={engine.id}>
+                        {engine.name}
+                      </option>
                     ))}
                   </select>
-                </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.showBookmarksBar}
-                      onChange={e => setSettings(s => ({ ...s, showBookmarksBar: e.target.checked }))}
-                    />
-                    Show Bookmarks Bar
-                  </label>
-                </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.searchSuggestions}
-                      onChange={e => setSettings(s => ({ ...s, searchSuggestions: e.target.checked }))}
-                    />
-                    Show Search Suggestions
-                  </label>
-                </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.hardwareAcceleration}
-                      onChange={e => setSettings(s => ({ ...s, hardwareAcceleration: e.target.checked }))}
-                    />
-                    Use Hardware Acceleration (requires restart)
-                  </label>
-                </div>
-              </div>
+                </label>
+                <label className="toggle-row">
+                  <span>
+                    <strong>Show bookmarks bar</strong>
+                    <small>Keep saved pages one click away under the toolbar.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={draft.showBookmarksBar}
+                    onChange={(event) => patch({ showBookmarksBar: event.target.checked })}
+                  />
+                </label>
+                <label className="toggle-row">
+                  <span>
+                    <strong>Show address suggestions</strong>
+                    <small>Match history, bookmarks and open tabs while typing.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={draft.searchSuggestions}
+                    onChange={(event) => patch({ searchSuggestions: event.target.checked })}
+                  />
+                </label>
+              </section>
             )}
 
-            {activeSection === 'appearance' && (
-              <div className="settings-section">
+            {section === 'appearance' && (
+              <section className="settings-section">
                 <h3>Appearance</h3>
-                <div className="setting-group">
-                  <label>Theme</label>
-                  <select
-                    value={settings.theme}
-                    onChange={e => setSettings(s => ({ ...s, theme: e.target.value as 'light' | 'dark' | 'system' }))}
-                  >
-                    <option value="system">System Default</option>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                  </select>
-                </div>
-                <div className="setting-group">
-                  <label>Accent Color</label>
-                  <div className="color-picker-wrapper">
-                    <input
-                      type="color"
-                      value={settings.accentColor}
-                      onChange={e => setSettings(s => ({ ...s, accentColor: e.target.value }))}
-                    />
-                    <span>{settings.accentColor}</span>
+                <div className="field">
+                  <span>Theme</span>
+                  <div className="theme-options">
+                    {(['dark', 'light', 'system'] as const).map((theme) => (
+                      <button
+                        key={theme}
+                        className={`theme-card ${draft.theme === theme ? 'active' : ''}`}
+                        onClick={() => patch({ theme })}
+                      >
+                        <span className={`theme-swatch ${theme}`} />
+                        <span>{theme === 'system' ? 'Follow system' : theme[0].toUpperCase() + theme.slice(1)}</span>
+                        {draft.theme === theme && <Icon name="check" size={14} />}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <div className="setting-group">
-                  <label>Density</label>
+                <div className="field">
+                  <span>Accent color</span>
+                  <div className="accent-options">
+                    {ACCENTS.map((color) => (
+                      <button
+                        key={color}
+                        className={`accent-swatch ${draft.accentColor.toLowerCase() === color ? 'active' : ''}`}
+                        style={{ background: color }}
+                        title={color}
+                        onClick={() => patch({ accentColor: color })}
+                      />
+                    ))}
+                    <input
+                      type="color"
+                      value={draft.accentColor}
+                      onChange={(event) => patch({ accentColor: event.target.value })}
+                      title="Custom accent color"
+                    />
+                  </div>
+                </div>
+                <label className="field">
+                  <span>Interface density</span>
                   <select
-                    value={settings.density}
-                    onChange={e => setSettings(s => ({ ...s, density: e.target.value as 'compact' | 'normal' | 'comfortable' }))}
+                    value={draft.density}
+                    onChange={(event) => patch({ density: event.target.value as AppSettingsDTO['density'] })}
                   >
                     <option value="compact">Compact</option>
                     <option value="normal">Normal</option>
                     <option value="comfortable">Comfortable</option>
                   </select>
-                </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.hardwareAcceleration}
-                      onChange={e => setSettings(s => ({ ...s, hardwareAcceleration: e.target.checked }))}
-                    />
-                    Hardware Acceleration
-                  </label>
-                </div>
-              </div>
+                </label>
+                <p className="settings-note">
+                  Ariadne is designed dark-first. The accent color is used for focus rings, active tabs and AI affordances only.
+                </p>
+              </section>
             )}
 
-            {activeSection === 'search' && (
-              <div className="settings-section">
-                <h3>Search Engines</h3>
-                <p className="setting-description">Manage search engines and keywords. Use %s as the query placeholder.</p>
-                <table className="search-engines-table">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Keyword</th>
-                      <th>URL Template</th>
-                      <th>Default</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {searchEngines.map(engine => (
-                      <tr key={engine.id}>
-                        <td>{engine.name}</td>
-                        <td><input type="text" value={engine.keyword} readOnly size={4} /></td>
-                        <td><input type="text" value={engine.url} readOnly style={{ minWidth: '300px' }} /></td>
-                        <td>{settings.defaultSearchEngine === engine.id ? '✓' : ''}</td>
-                        <td>
-                          <button onClick={() => setSettings(s => ({ ...s, defaultSearchEngine: engine.id }))} disabled={settings.defaultSearchEngine === engine.id}>
-                            Make Default
-                          </button>
-                        </td>
-                      </tr>
+            {section === 'search' && (
+              <section className="settings-section">
+                <h3>Search engines</h3>
+                <p className="settings-note">
+                  The address bar treats input without a host as a search. Choose which engine receives it.
+                </p>
+                <div className="engine-list">
+                  {searchEngines.map((engine) => (
+                    <label key={engine.id} className={`engine-row ${draft.defaultSearchEngine === engine.id ? 'active' : ''}`}>
+                      <input
+                        type="radio"
+                        name="default-engine"
+                        checked={draft.defaultSearchEngine === engine.id}
+                        onChange={() => patch({ defaultSearchEngine: engine.id })}
+                      />
+                      <span className="engine-copy">
+                        <strong>{engine.name}</strong>
+                        <span>{engine.url.replace('%s', '…')}</span>
+                      </span>
+                      <span className="engine-keyword">{engine.keyword}</span>
+                    </label>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {section === 'privacy' && (
+              <section className="settings-section">
+                <h3>Privacy and security</h3>
+                <label className="toggle-row">
+                  <span>
+                    <strong>Send “Do Not Track”</strong>
+                    <small>Ask sites not to track this browser. Sites may ignore it.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={draft.doNotTrack}
+                    onChange={(event) => patch({ doNotTrack: event.target.checked })}
+                  />
+                </label>
+                <label className="toggle-row">
+                  <span>
+                    <strong>Clear browsing data on exit</strong>
+                    <small>History and site storage for normal windows are removed when Ariadne quits.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={draft.clearOnExit}
+                    onChange={(event) => patch({ clearOnExit: event.target.checked })}
+                  />
+                </label>
+
+                <div className="settings-subsection">
+                  <h4>Clear browsing data now</h4>
+                  <div className="check-grid">
+                    {(
+                      [
+                        ['history', 'History'],
+                        ['cookies', 'Cookies and site data'],
+                        ['cache', 'Cache'],
+                        ['permissions', 'Site permissions'],
+                      ] as const
+                    ).map(([key, label]) => (
+                      <label key={key} className="checkbox-row">
+                        <input
+                          type="checkbox"
+                          checked={clearOptions[key]}
+                          onChange={(event) => setClearOptions((current) => ({ ...current, [key]: event.target.checked }))}
+                        />
+                        {label}
+                      </label>
                     ))}
-                  </tbody>
-                </table>
-                <button className="btn-primary" onClick={() => alert('Add custom search engine - TBD')}>+ Add Search Engine</button>
-              </div>
+                  </div>
+                  <button className="danger-btn small" disabled={saving} onClick={() => void clearData()}>
+                    <Icon name="trash" size={13} /> Clear selected data
+                  </button>
+                  <p className="settings-note">
+                    Private windows already use an isolated, in-memory profile that is discarded when the window closes.
+                  </p>
+                </div>
+              </section>
             )}
 
-            {activeSection === 'privacy' && (
-              <div className="settings-section">
-                <h3>Privacy & Security</h3>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.doNotTrack}
-                      onChange={e => setSettings(s => ({ ...s, doNotTrack: e.target.checked }))}
-                    />
-                    Send "Do Not Track" request
-                  </label>
+            {section === 'shortcuts' && (
+              <section className="settings-section">
+                <h3>Keyboard shortcuts</h3>
+                <p className="settings-note">
+                  These accelerators are registered by the application menu, so they work while Ariadne is focused and do not capture keys system-wide.
+                </p>
+                <div className="shortcut-table">
+                  {SHORTCUTS.map(([action, keys]) => (
+                    <div key={action} className="shortcut-row">
+                      <span>{action}</span>
+                      <span className="shortcut-keys">
+                        {keys.split(' / ').map((combination) =>
+                          combination.split('+').map((key) => <kbd key={`${action}-${combination}-${key}`}>{key}</kbd>)
+                        )}
+                      </span>
+                    </div>
+                  ))}
                 </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.blockThirdPartyCookies}
-                      onChange={e => setSettings(s => ({ ...s, blockThirdPartyCookies: e.target.checked }))}
-                    />
-                    Block third-party cookies
-                  </label>
-                </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={settings.clearOnExit}
-                      onChange={e => setSettings(s => ({ ...s, clearOnExit: e.target.checked }))}
-                    />
-                    Clear browsing data on exit
-                  </label>
-                </div>
-                <div className="setting-group">
-                  <button className="btn-danger" onClick={() => alert('Clear browsing data - TBD')}>Clear Browsing Data...</button>
-                </div>
-                <div className="setting-group">
-                  <button className="btn-secondary" onClick={() => alert('Site settings - TBD')}>Site Settings...</button>
-                </div>
-                <div className="setting-group">
-                  <button className="btn-secondary" onClick={() => alert('Certificates - TBD')}>Manage Certificates...</button>
-                </div>
-              </div>
+              </section>
             )}
 
-            {activeSection === 'shortcuts' && (
-              <div className="settings-section">
-                <h3>Keyboard Shortcuts</h3>
-                <p className="setting-description">Click a shortcut to edit. Press the new key combination.</p>
-                <table className="shortcuts-table">
-                  <thead>
-                    <tr>
-                      <th>Action</th>
-                      <th>Shortcut</th>
-                      <th>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {settings.shortcuts.map((shortcut, i) => (
-                      <tr key={shortcut.action}>
-                        <td>{shortcut.action}</td>
-                        <td>
-                          {editingShortcut === shortcut.action ? (
-                            <input
-                              type="text"
-                              value={editKeys}
-                              onChange={e => setEditKeys(e.target.value)}
-                              onKeyDown={e => {
-                                e.preventDefault();
-                                const keys = [];
-                                if (e.ctrlKey) keys.push('Ctrl');
-                                if (e.metaKey) keys.push('Cmd');
-                                if (e.shiftKey) keys.push('Shift');
-                                if (e.altKey) keys.push('Alt');
-                                if (e.key !== 'Control' && e.key !== 'Meta' && e.key !== 'Shift' && e.key !== 'Alt') {
-                                  keys.push(e.key.length === 1 ? e.key.toUpperCase() : e.key);
-                                }
-                                setEditKeys(keys.join('+'));
-                              }}
-                              onBlur={() => {
-                                if (editKeys) {
-                                  setSettings(s => ({
-                                    ...s,
-                                    shortcuts: s.shortcuts.map(sc => sc.action === shortcut.action ? { ...sc, keys: editKeys } : sc)
-                                  }));
-                                }
-                                setEditingShortcut(null);
-                                setEditKeys('');
-                              }}
-                              autoFocus
-                            />
-                          ) : (
-                            <button
-                              className="shortcut-key"
-                              onClick={() => { setEditingShortcut(shortcut.action); setEditKeys(shortcut.keys); }}
-                            >
-                              {shortcut.keys}
-                            </button>
-                          )}
-                        </td>
-                        <td></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button className="btn-secondary" onClick={() => setSettings(s => ({ ...s, shortcuts: DEFAULT_SHORTCUTS }))}>
-                  Reset to Defaults
-                </button>
-              </div>
-            )}
-
-            {activeSection === 'ai' && (
-              <div className="settings-section">
-                <h3>AI Settings</h3>
-                <p className="setting-description">Configure AI providers, models, and behavior.</p>
-                <div className="setting-group">
-                  <button className="btn-primary" onClick={() => alert('AI Settings - managed in AI Sidebar')}>
-                    Open AI Sidebar Settings
+            {section === 'ai' && (
+              <section className="settings-section">
+                <h3>AI</h3>
+                <p className="settings-note">
+                  Providers, API keys, model slots and the system prompt live in the AI sidebar so you can see the active routing while you chat.
+                </p>
+                <div className="settings-actions">
+                  <button className="primary-btn small" onClick={onOpenAI}>
+                    <Icon name="sparkle" size={14} /> Open AI sidebar
                   </button>
                 </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input type="checkbox" defaultChecked />
-                    Enable AI features
-                  </label>
+                <div className="settings-subsection">
+                  <h4>How context is handled</h4>
+                  <ul className="settings-list">
+                    <li>Only the page you explicitly include is extracted for chat.</li>
+                    <li>Cross-tab context is extracted locally and previewed before anything is sent.</li>
+                    <li>Private tabs are never extracted, and private windows are excluded from history and downloads.</li>
+                    <li>Answers from cross-tab context carry citations with the source tab and URL.</li>
+                  </ul>
                 </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input type="checkbox" />
-                    Allow AI to access page content
-                  </label>
-                </div>
-                <div className="setting-group checkbox">
-                  <label>
-                    <input type="checkbox" />
-                    Stream responses
-                  </label>
-                </div>
-              </div>
+              </section>
             )}
 
-            {activeSection === 'about' && (
-              <div className="settings-section">
+            {section === 'about' && (
+              <section className="settings-section">
                 <h3>About Ariadne</h3>
-                <div className="about-info">
-                  <div className="about-logo">🕷️</div>
-                  <h4>Ariadne Browser</h4>
-                  <p>Version 0.1.0 (Development)</p>
-                  <p>An AI-native desktop browser built with Electron, React, and TypeScript.</p>
-                  <div className="about-links">
-                    <a href="https://github.com" target="_blank" rel="noopener noreferrer">GitHub</a>
-                    <a href="https://github.com" target="_blank" rel="noopener noreferrer">Issues</a>
-                    <a href="https://github.com" target="_blank" rel="noopener noreferrer">License</a>
+                <div className="about-block">
+                  <span className="about-mark">
+                    <Icon name="sparkle" size={22} />
+                  </span>
+                  <div>
+                    <strong>Ariadne Browser</strong>
+                    <p>Version {appInfo?.appVersion || '0.1.0'} · Electron {appInfo?.electron || 'unknown'}</p>
+                    <p>An AI-native desktop browser built with Electron, React and TypeScript.</p>
                   </div>
-                  <details>
-                    <summary>Technical Details</summary>
-                    <pre>{JSON.stringify({
-                      electron: process.versions.electron,
-                      chrome: process.versions.chrome,
-                      node: process.versions.node,
-                      v8: process.versions.v8,
-                      platform: process.platform,
-                      arch: process.arch,
-                    }, null, 2)}</pre>
-                  </details>
                 </div>
-              </div>
+                <div className="about-links">
+                  <button
+                    className="text-btn"
+                    onClick={() => void window.electronAPI.app.openExternal('https://github.com/Rafiadnan0666/ariadne')}
+                  >
+                    Source repository <Icon name="external" size={12} />
+                  </button>
+                  <button
+                    className="text-btn"
+                    onClick={() => void window.electronAPI.app.openExternal('https://github.com/Rafiadnan0666/ariadne/issues')}
+                  >
+                    Report an issue <Icon name="external" size={12} />
+                  </button>
+                </div>
+                <details className="technical-details">
+                  <summary>Technical details</summary>
+                  <pre>
+                    {JSON.stringify(
+                      {
+                        electron: appInfo?.electron,
+                        chrome: appInfo?.chrome,
+                        node: appInfo?.node,
+                        v8: appInfo?.v8,
+                        platform: appInfo?.platform,
+                        arch: appInfo?.arch,
+                      },
+                      null,
+                      2
+                    )}
+                  </pre>
+                </details>
+              </section>
             )}
           </div>
         </div>
       </div>
     </div>
-  );
-};
+  )
+}

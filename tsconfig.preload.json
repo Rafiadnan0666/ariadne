@@ -13,6 +13,6 @@
     "outDir": "./dist",
     "rootDir": "./src"
   },
-  "include": ["src/preload.ts"],
+  "include": ["src/preload.ts", "src/shared/**/*"],
   "exclude": ["node_modules", "dist"]
 }

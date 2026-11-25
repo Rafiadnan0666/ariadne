@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { Icon } from './Icon';
 
 interface HistoryEntry {
   id: number;
@@ -59,7 +60,7 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({
 
   const loadHistory = useCallback(async () => {
     try {
-      const data = await window.electronAPI.getHistory();
+      const data = await window.electronAPI.history.get();
       setEntries(data);
     } catch (e) {
       console.error('Failed to load history:', e);
@@ -131,7 +132,7 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({
             autoFocus
           />
           <button className="history-clear-btn" onClick={() => setShowClearDialog(true)}>Clear History</button>
-          <button className="history-close-btn" onClick={onClose}>✕</button>
+          <button className="history-close-btn" onClick={onClose} aria-label="Close history"><Icon name="close" size={16} /></button>
         </div>
       </div>
       <div className="history-content">
@@ -152,7 +153,7 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({
                     </div>
                     <div className="history-entry-meta">
                       <span className="history-entry-time">{formatDate(entry.visitedAt)}</span>
-                      <button className="history-entry-delete" onClick={e => { e.stopPropagation(); onDeleteEntry(entry.id); }} title="Remove from history">🗑</button>
+                      <button className="history-entry-delete" onClick={e => { e.stopPropagation(); onDeleteEntry(entry.id); }} title="Remove from history" aria-label="Remove from history"><Icon name="trash" size={14} /></button>
                     </div>
                   </div>
                 ))}

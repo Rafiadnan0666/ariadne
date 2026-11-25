@@ -1,283 +1,231 @@
-import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { useDrag, useDrop } from 'react-dnd';
-import { HTML5Backend } from 'react-dnd-html5-backend';
-import { DndProvider } from 'react-dnd';
-
-interface Tab {
-  id: string;
-  url: string;
-  title: string;
-  active: boolean;
-  pinned?: boolean;
-  muted?: boolean;
-  loading?: boolean;
-  favicon?: string;
-  audioPlaying?: boolean;
-}
+import React, { useCallback, useRef, useState } from 'react'
+import type { TabDTO } from '../types'
+import { Icon } from './Icon'
 
 interface TabStripProps {
-  tabs: Tab[];
-  activeTabId: string | null;
-  onCreateTab: (url?: string) => void;
-  onCloseTab: (id: string, e: React.MouseEvent) => void;
-  onSwitchTab: (id: string) => void;
-  onPinTab: (id: string) => void;
-  onMuteTab: (id: string) => void;
-  onDuplicateTab: (id: string) => void;
-  onReopenClosedTab: () => void;
-  onTabContextMenu: (id: string, e: React.MouseEvent) => void;
-  closedTabs: Tab[];
-  canGoBack: boolean;
-  canGoForward: boolean;
-  onBack: () => void;
-  onForward: () => void;
-  onReload: () => void;
-  onStop: () => void;
-  isLoading: boolean;
+  tabs: TabDTO[]
+  activeTabId: string | null
+  isPrivate: boolean
+  aiOpen: boolean
+  downloadCount: number
+  onSelectTab: (id: string) => void
+  onCloseTab: (id: string) => void
+  onMuteTab: (id: string) => void
+  onCreateTab: () => void
+  onContextMenu: (id: string, event: React.MouseEvent) => void
+  onReorder: (fromIndex: number, toIndex: number) => void
+  onToggleAi: () => void
+  onOpenDownloads: () => void
+  onOpenHistory: () => void
+  onOpenSettings: () => void
 }
 
-const TabItem: React.FC<{
-  tab: Tab;
-  index: number;
-  activeTabId: string | null;
-  onSwitchTab: (id: string) => void;
-  onCloseTab: (id: string, e: React.MouseEvent) => void;
-  onPinTab: (id: string) => void;
-  onMuteTab: (id: string) => void;
-  onDuplicateTab: (id: string) => void;
-  onTabContextMenu: (id: string, e: React.MouseEvent) => void;
-  moveTab: (fromIndex: number, toIndex: number) => void;
-}> = ({
-  tab,
-  index,
-  activeTabId,
-  onSwitchTab,
-  onCloseTab,
-  onPinTab,
-  onMuteTab,
-  onDuplicateTab,
-  onTabContextMenu,
-  moveTab,
-}) => {
-  const isActive = tab.id === activeTabId;
-  const isPinned = tab.pinned || false;
-  const isMuted = tab.muted || false;
-  const isLoading = tab.loading || false;
+function hostOf(url: string): string {
+  if (!url || url === 'about:blank') return 'New tab'
+  try {
+    return new URL(url).hostname.replace(/^www\./, '')
+  } catch {
+    return url
+  }
+}
 
-  const [{ isDragging }, drag] = useDrag({
-    type: 'TAB',
-    item: { id: tab.id, index },
-    collect: (monitor) => ({
-      isDragging: monitor.isDragging(),
-    }),
-    end: (item, monitor) => {
-      const dropResult = monitor.getDropResult();
-      if (dropResult && dropResult.index !== index) {
-        moveTab(index, dropResult.index);
-      }
-    },
-  });
-
-  const [, drop] = useDrop({
-    accept: 'TAB',
-    hover: (item: { index: number }) => {
-      if (item.index !== index) {
-        moveTab(item.index, index);
-      }
-    },
-  });
-
-  const handleDrag = drag;
-  const handleDrop = drop;
-
-  const handleClick = (e: React.MouseEvent) => {
-    if (e.button === 1) { // Middle click
-      e.preventDefault();
-      onCloseTab(tab.id, e);
-    } else {
-      onSwitchTab(tab.id);
-    }
-  };
-
-  const handleContextMenu = (e: React.MouseEvent) => {
-    e.preventDefault();
-    onTabContextMenu(tab.id, e);
-  };
+const TabRow: React.FC<{
+  tab: TabDTO
+  index: number
+  active: boolean
+  onSelect: (id: string) => void
+  onClose: (id: string) => void
+  onMute: (id: string) => void
+  onContextMenu: (id: string, event: React.MouseEvent) => void
+  onDragStart: (index: number) => void
+  onDropAt: (index: number) => void
+  dragging: boolean
+  setDragging: (value: boolean) => void
+}> = ({ tab, index, active, onSelect, onClose, onMute, onContextMenu, onDragStart, onDropAt, dragging, setDragging }) => {
+  const [faviconFailed, setFaviconFailed] = useState(false)
+  const letter = (tab.title || hostOf(tab.url) || '?').trim().charAt(0).toUpperCase()
 
   return (
     <div
-      ref={(node) => {
-        handleDrag(node);
-        handleDrop(node);
+      role="tab"
+      aria-selected={active}
+      tabIndex={0}
+      className={`tab-row ${active ? 'active' : ''} ${dragging ? 'dragging' : ''} ${tab.pinned ? 'pinned' : ''}`}
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.effectAllowed = 'move'
+        event.dataTransfer.setData('text/plain', tab.id)
+        onDragStart(index)
+        setDragging(true)
       }}
-      className={`tab ${isActive ? 'active' : ''} ${isPinned ? 'pinned' : ''} ${isMuted ? 'muted' : ''} ${isDragging ? 'dragging' : ''}`}
-      onClick={handleClick}
-      onContextMenu={handleContextMenu}
-      onDoubleClick={() => { if (isPinned) onPinTab(tab.id); }}
-      style={{ opacity: isDragging ? 0.5 : 1 }}
+      onDragEnd={() => setDragging(false)}
+      onDragOver={(event) => {
+        event.preventDefault()
+        event.dataTransfer.dropEffect = 'move'
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        onDropAt(index)
+        setDragging(false)
+      }}
+      onClick={() => onSelect(tab.id)}
+      onAuxClick={(event) => {
+        if (event.button === 1) onClose(tab.id)
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          onSelect(tab.id)
+        }
+      }}
+      onContextMenu={(event) => onContextMenu(tab.id, event)}
+      title={`${tab.title || hostOf(tab.url)}\n${tab.url}`}
     >
-      {tab.favicon && (
-        <img
-          className="tab-favicon"
-          src={tab.favicon}
-          alt=""
-          onError={(e) => { e.currentTarget.style.display = 'none'; }}
-        />
-      )}
-      <span className="tab-title">{tab.title}</span>
-      {isLoading && <span className="tab-loading-indicator" />}
-      {tab.audioPlaying && !isMuted && <span className="tab-audio-indicator" title="Playing audio">🔊</span>}
-      {isMuted && <span className="tab-muted-indicator" title="Muted" onClick={(e) => { e.stopPropagation(); onMuteTab(tab.id); }}>🔇</span>}
-      {isPinned && <span className="tab-pinned-indicator" title="Pinned" onClick={(e) => { e.stopPropagation(); onPinTab(tab.id); }}>📌</span>}
-      {!isPinned && (
-        <span className="tab-close" onClick={(e) => { e.stopPropagation(); onCloseTab(tab.id, e); }}>✕</span>
-      )}
+      <span className="tab-favicon">
+        {tab.favicon && !faviconFailed ? (
+          <img src={tab.favicon} alt="" onError={() => setFaviconFailed(true)} />
+        ) : (
+          <span className="tab-letter">{letter}</span>
+        )}
+      </span>
+      <span className="tab-copy">
+        <span className="tab-title">{tab.title || hostOf(tab.url)}</span>
+        <span className="tab-host">{hostOf(tab.url)}</span>
+      </span>
+      <span className="tab-badges">
+        {tab.loading && <span className="tab-spinner" aria-label="Loading" />}
+        {tab.audioPlaying && !tab.muted && (
+          <button
+            className="tab-mini-btn"
+            title="Mute tab"
+            onClick={(event) => {
+              event.stopPropagation()
+              onMute(tab.id)
+            }}
+          >
+            <Icon name="volume" size={13} />
+          </button>
+        )}
+        {tab.muted && <Icon name="mute" size={13} className="tab-muted" />}
+        {tab.pinned && <Icon name="pin" size={12} className="tab-pinned" />}
+      </span>
+      <button
+        className="tab-close"
+        title="Close tab"
+        aria-label={`Close ${tab.title || 'tab'}`}
+        onClick={(event) => {
+          event.stopPropagation()
+          onClose(tab.id)
+        }}
+      >
+        <Icon name="close" size={13} />
+      </button>
     </div>
-  );
-};
+  )
+}
 
 export const TabStrip: React.FC<TabStripProps> = ({
   tabs,
   activeTabId,
-  onCreateTab,
+  isPrivate,
+  aiOpen,
+  downloadCount,
+  onSelectTab,
   onCloseTab,
-  onSwitchTab,
-  onPinTab,
   onMuteTab,
-  onDuplicateTab,
-  onReopenClosedTab,
-  onTabContextMenu,
-  closedTabs,
-  canGoBack,
-  canGoForward,
-  onBack,
-  onForward,
-  onReload,
-  onStop,
-  isLoading,
+  onCreateTab,
+  onContextMenu,
+  onReorder,
+  onToggleAi,
+  onOpenDownloads,
+  onOpenHistory,
+  onOpenSettings,
 }) => {
-  const [showTabSearch, setShowTabSearch] = useState(false);
-  const [tabSearchQuery, setTabSearchQuery] = useState('');
-  const tabSearchInputRef = useRef<HTMLInputElement>(null);
+  const dragIndex = useRef<number | null>(null)
+  const [dragging, setDragging] = useState(false)
 
-  const pinnedTabs = tabs.filter(t => t.pinned);
-  const regularTabs = tabs.filter(t => !t.pinned);
-
-  const moveTab = useCallback((fromIndex: number, toIndex: number) => {
-    // This would need to be implemented in parent to reorder tabs array
-    console.log('Move tab', fromIndex, toIndex);
-  }, []);
-
-  const filteredTabs = tabSearchQuery
-    ? tabs.filter(t => t.title.toLowerCase().includes(tabSearchQuery.toLowerCase()))
-    : tabs;
-
-  useEffect(() => {
-    if (showTabSearch) {
-      setTimeout(() => tabSearchInputRef.current?.focus(), 0);
-    }
-  }, [showTabSearch]);
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Escape') {
-      setShowTabSearch(false);
-      setTabSearchQuery('');
-    }
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'T') {
-      e.preventDefault();
-      onReopenClosedTab();
-    }
-  };
+  const handleDropAt = useCallback(
+    (index: number) => {
+      if (dragIndex.current === null) return
+      onReorder(dragIndex.current, index)
+      dragIndex.current = null
+    },
+    [onReorder]
+  )
 
   return (
-    <div className="tab-strip-container" onKeyDown={handleKeyDown}>
-      <div className="tab-strip-header">
-        <div className="tab-strip-left">
-          <button className="tab-strip-btn" onClick={onBack} disabled={!canGoBack} title="Back (Alt+Left)">←</button>
-          <button className="tab-strip-btn" onClick={onForward} disabled={!canGoForward} title="Forward (Alt+Right)">→</button>
-          <button className="tab-strip-btn" onClick={isLoading ? onStop : onReload} title={isLoading ? 'Stop (Esc)' : 'Reload (F5/Ctrl+R)'}>
-            {isLoading ? '✕' : '⟳'}
-          </button>
-        </div>
-        <div className="tab-strip-tabs">
-          <DndProvider backend={HTML5Backend}>
-            <div className="tab-strip-dnd" style={{ display: 'flex', gap: '2px' }}>
-              {pinnedTabs.length > 0 && (
-                <>
-                  <div className="tab-group-divider">Pinned</div>
-                  {pinnedTabs.map((tab, i) => (
-                    <TabItem
-                      key={tab.id}
-                      tab={tab}
-                      index={i}
-                      activeTabId={activeTabId}
-                      onSwitchTab={onSwitchTab}
-                      onCloseTab={onCloseTab}
-                      onPinTab={onPinTab}
-                      onMuteTab={onMuteTab}
-                      onDuplicateTab={onDuplicateTab}
-                      onTabContextMenu={onTabContextMenu}
-                      moveTab={moveTab}
-                    />
-                  ))}
-                  <div className="tab-group-divider">Tabs</div>
-                </>
-              )}
-              {regularTabs.map((tab, i) => (
-                <TabItem
-                  key={tab.id}
-                  tab={tab}
-                  index={pinnedTabs.length + i}
-                  activeTabId={activeTabId}
-                  onSwitchTab={onSwitchTab}
-                  onCloseTab={onCloseTab}
-                  onPinTab={onPinTab}
-                  onMuteTab={onMuteTab}
-                  onDuplicateTab={onDuplicateTab}
-                  onTabContextMenu={onTabContextMenu}
-                  moveTab={moveTab}
-                />
-              ))}
-              {tabs.length === 0 && (
-                <div className="tab new-tab-placeholder" onClick={() => onCreateTab('about:blank')}>
-                  <span>+ New Tab</span>
-                </div>
-              )}
-            </div>
-          </DndProvider>
-        </div>
-        <div className="tab-strip-right">
-          <button className="tab-strip-btn new-tab-btn" onClick={() => onCreateTab('about:blank')} title="New Tab (Ctrl+T)">+</button>
-          <button className="tab-strip-btn" onClick={() => { setShowTabSearch(true); setTabSearchQuery(''); }} title="Search Tabs (Ctrl+Shift+A)">🔍</button>
-          {showTabSearch && (
-            <input
-              ref={tabSearchInputRef}
-              type="text"
-              className="tab-search-input"
-              placeholder="Search tabs..."
-              value={tabSearchQuery}
-              onChange={(e) => setTabSearchQuery(e.target.value)}
-              onBlur={() => { setTimeout(() => { setShowTabSearch(false); setTabSearchQuery(''); }, 100); }}
-              onKeyDown={(e) => { if (e.key === 'Enter') { const match = filteredTabs[0]; if (match) onSwitchTab(match.id); setShowTabSearch(false); setTabSearchQuery(''); }}}
-            />
-          )}
-        </div>
+    <aside className="tab-rail">
+      <div className="rail-brand">
+        <span className="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7">
+            <circle cx="12" cy="12" r="3.2" />
+            <path d="M12 2v4M12 18v4M2 12h4M18 12h4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M19.1 4.9l-2.8 2.8M7.7 16.3l-2.8 2.8" />
+          </svg>
+        </span>
+        <span className="brand-text">
+          <strong>Ariadne</strong>
+          <span>{isPrivate ? 'Private window' : 'Browser'}</span>
+        </span>
+        {isPrivate && (
+          <span className="private-badge" title="This window does not save history or cookies">
+            <Icon name="lock" size={11} /> Private
+          </span>
+        )}
       </div>
-      {showTabSearch && filteredTabs.length > 0 && (
-        <div className="tab-search-results">
-          {filteredTabs.map(tab => (
-            <div key={tab.id} className="tab-search-result" onClick={() => { onSwitchTab(tab.id); setShowTabSearch(false); setTabSearchQuery(''); }}>
-              <span>{tab.title}</span>
-              <span className="tab-search-url">{tab.url}</span>
-            </div>
-          ))}
-        </div>
-      )}
-      {closedTabs.length > 0 && (
-        <div className="reopen-closed-indicator" onClick={onReopenClosedTab}>
-          {closedTabs.length} closed tab{closedTabs.length > 1 ? 's' : ''} · Click to reopen (Ctrl+Shift+T)
-        </div>
-      )}
-    </div>
-  );
-};
+
+      <button className="rail-new-tab" onClick={onCreateTab} title="New tab (Ctrl+T)">
+        <Icon name="plus" size={15} />
+        <span>New tab</span>
+        <kbd>Ctrl T</kbd>
+      </button>
+
+      <div className="rail-tabs" role="tablist" aria-label="Open tabs">
+        {tabs.map((tab, index) => (
+          <TabRow
+            key={tab.id}
+            tab={tab}
+            index={index}
+            active={tab.id === activeTabId}
+            onSelect={onSelectTab}
+            onClose={onCloseTab}
+            onMute={onMuteTab}
+            onContextMenu={onContextMenu}
+            onDragStart={(from) => {
+              dragIndex.current = from
+            }}
+            onDropAt={handleDropAt}
+            dragging={dragging && dragIndex.current === index}
+            setDragging={setDragging}
+          />
+        ))}
+        {tabs.length === 0 && <div className="rail-empty">No open tabs</div>}
+      </div>
+
+      <div className="rail-footer">
+        <button className="rail-action" onClick={onOpenHistory} title="History (Ctrl+H)">
+          <Icon name="history" size={15} />
+          <span>History</span>
+        </button>
+        <button className="rail-action" onClick={onOpenDownloads} title="Downloads (Ctrl+J)">
+          <Icon name="download" size={15} />
+          <span>Downloads</span>
+          {downloadCount > 0 && <span className="rail-count">{downloadCount}</span>}
+        </button>
+        <button className="rail-action" onClick={onOpenSettings} title="Settings">
+          <Icon name="settings" size={15} />
+          <span>Settings</span>
+        </button>
+        <button
+          className={`rail-action rail-ai ${aiOpen ? 'active' : ''}`}
+          onClick={onToggleAi}
+          title="Toggle AI sidebar (Ctrl+Shift+A)"
+          aria-pressed={aiOpen}
+        >
+          <Icon name="sparkle" size={15} />
+          <span>Ask Ariadne</span>
+          <kbd>Ctrl ⇧ A</kbd>
+        </button>
+      </div>
+    </aside>
+  )
+}

@@ -15,6 +15,8 @@ export interface ContextPickerProps {
   activeTabId?: string
   /** Reads the current text selection from the live webview. */
   getActiveSelection?: () => Promise<string | undefined>
+  /** Focus the tab that a source or citation came from. */
+  onOpenTab?: (tabId: string) => void
 }
 
 type Busy = 'extract' | 'preview' | 'send' | 'screenshot' | null
@@ -34,7 +36,7 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-export function ContextPicker({ isOpen, onClose, activeTabId, getActiveSelection }: ContextPickerProps) {
+export function ContextPicker({ isOpen, onClose, activeTabId, getActiveSelection, onOpenTab }: ContextPickerProps) {
   const [state, setState] = useState<PickerState | null>(null)
   const [mode, setMode] = useState<ContextSelection['mode']>('current')
   const [selectedTabIds, setSelectedTabIds] = useState<Set<string>>(new Set())
@@ -401,6 +403,7 @@ export function ContextPicker({ isOpen, onClose, activeTabId, getActiveSelection
                           {entry.tab.id === activeTabId && <span className="ctx-badge">active</span>}
                           {entry.isPrivate && <span className="ctx-badge ctx-badge-test">private</span>}
                           {entry.excluded && <span className="ctx-badge ctx-badge-warn">excluded</span>}
+                          {entry.stale && <span className="ctx-badge ctx-badge-warn" title="The cached extraction belongs to a different URL">stale</span>}
                           {entry.cached
                             ? <span className="ctx-size">{formatCount(entry.chars)} chars · ~{formatCount(entry.approxTokens)} tok</span>
                             : <span className="ctx-muted">not extracted</span>}
@@ -469,9 +472,15 @@ export function ContextPicker({ isOpen, onClose, activeTabId, getActiveSelection
                       {item.sources.length > 1 && (
                         <div className="ctx-sources">
                           {item.sources.map((source) => (
-                            <div key={`${source.tabId}:${source.url}`} className="ctx-source">
+                            <button
+                              key={`${source.tabId}:${source.url}`}
+                              type="button"
+                              className="ctx-source"
+                              onClick={() => onOpenTab?.(source.tabId)}
+                              title="Open source tab"
+                            >
                               tab {source.tabId} · {source.url}
-                            </div>
+                            </button>
                           ))}
                         </div>
                       )}
@@ -583,12 +592,18 @@ export function ContextPicker({ isOpen, onClose, activeTabId, getActiveSelection
                     <div className="ctx-citations">
                       {answer.citations.length === 0 && <div className="ctx-muted">No citations.</div>}
                       {answer.citations.map((citation) => (
-                        <div key={citation.sourceId} className="ctx-citation">
+                        <button
+                          key={citation.sourceId}
+                          type="button"
+                          className="ctx-citation"
+                          onClick={() => onOpenTab?.(citation.tabId)}
+                          title={`Open source tab ${citation.tabId}`}
+                        >
                           <span className="ctx-badge">[{citation.sourceId}]</span>
                           <span className="ctx-citation-title">{citation.title}</span>
                           <span className="ctx-citation-url">{citation.url}</span>
                           <span className="ctx-muted">tab {citation.tabId} · chunk {citation.chunkIndex}</span>
-                        </div>
+                        </button>
                       ))}
                     </div>
                   </div>

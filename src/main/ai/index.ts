@@ -298,6 +298,10 @@ export class AISystem {
   async shutdown(): Promise<void> {
     await this.registry.shutdown();
   }
+
+  cancelChat(): void {
+    this.registry.cancelActiveRequests();
+  }
 }
 
 export const aiSystem = new AISystem();
