@@ -236,12 +236,6 @@ npm run dev:electron   # tsc -w
 npm start
 ```
 
-## Target Environment
-
-- Windows 11, 16 GB RAM, RX 6550M GPU
-- Optimized for limited SSD (bounded caches, no idle polling)
-- Minimal dependencies
-
 ## License
 
 MIT
