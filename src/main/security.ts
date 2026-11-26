@@ -234,9 +234,17 @@ async function applyAdBlockRules(ses: Session): Promise<void> {
   if (adblockRules.length === 0) return
 
   try {
-    // declarativeNetRequest is available on session in Electron 25+
-    const dnr = (ses as any).declarativeNetRequest
-    if (dnr) {
+    // In Electron, declarativeNetRequest is on session.defaultSession (static) or webContents.session
+    // Try multiple paths
+    let dnr = (ses as any).declarativeNetRequest
+    if (!dnr) {
+      try { dnr = (session as any).defaultSession?.declarativeNetRequest } catch {}
+    }
+    if (!dnr && (ses as any).webContents) {
+      dnr = (ses as any).webContents.session?.declarativeNetRequest
+    }
+    
+    if (dnr && typeof dnr.getDynamicRules === 'function') {
       const existing = await dnr.getDynamicRules()
       await dnr.updateDynamicRules({
         removeRuleIds: existing.map((r: any) => r.id),
@@ -244,7 +252,7 @@ async function applyAdBlockRules(ses: Session): Promise<void> {
       })
       console.log(`[AdBlock] Applied ${adblockRules.length} declarative rules`)
     } else {
-      console.warn('[AdBlock] declarativeNetRequest not available on this Electron version')
+      console.warn('[AdBlock] declarativeNetRequest not available on this Electron version/session')
     }
   } catch (e) {
     console.error('[AdBlock] Failed to apply rules:', e)

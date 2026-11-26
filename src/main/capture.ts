@@ -128,11 +128,11 @@ export async function runDemo(frameDirectory: string, getWindow: () => BrowserWi
   try {
     await delay(2200)
 
-    // Type a real address into the new tab page and open it.
-    await typeInto(window, '.ntp-search input', 'example.com', 60)
+    // Type a real search query into the new tab page and open it.
+    await typeInto(window, '.ntp-search input', 'badak sumatera meninggal setelah dipindahkan indonesia', 60)
     await delay(400)
     await run(window, `document.querySelector('.ntp-search')?.requestSubmit()`)
-    await delay(3600)
+    await delay(5000)
 
     // Open the assistant and its configuration panel.
     await click(window, '[aria-label="Toggle AI sidebar"]')
@@ -272,8 +272,8 @@ export async function runCapture(directory: string, getWindow: () => BrowserWind
     `window.electronAPI.tab.getAll().then((tabs) => (tabs.find((t) => t.active) || tabs[0] || {}).id)`
   )) as string | undefined
   if (tabId) {
-    await run(window, `window.electronAPI.tab.navigate('${tabId}', 'https://example.com')`)
-    await delay(3500)
+    await run(window, `window.electronAPI.tab.navigate('${tabId}', 'https://www.google.com/search?q=badak+sumatera+meninggal+setelah+dipindahkan+indonesia')`)
+    await delay(5000)
     const tabState = await run(
       window,
       `window.electronAPI.tab.getAll().then((tabs) => tabs.map((t) => ({ title: t.title, url: t.url, loading: t.loading })))`

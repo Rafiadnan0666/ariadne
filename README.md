@@ -38,17 +38,25 @@ An AI-native desktop browser built with Electron, React, and TypeScript. Browser
 
 | New Tab Page | AI Sidebar | AI Settings | Add Provider Form |
 |:------------:|:----------:|:-----------:|:-----------------:|
-| ![New Tab](docs/screenshots/01-new-tab.png) | ![AI Sidebar](docs/screenshots/02-ai-sidebar.png) | ![AI Settings](docs/screenshots/03-ai-settings.png) | ![Add Provider](docs/screenshots/04-add-provider-form.png) |
+| ![New Tab](docs/screenshots-security/01-new-tab.png) | ![AI Sidebar](docs/screenshots-security/02-ai-sidebar.png) | ![AI Settings](docs/screenshots-security/03-ai-settings.png) | ![Add Provider](docs/screenshots-security/04-add-provider-form.png) |
 
-| Provider Form Filled | Provider Added | Settings | Appearance Settings | Web Page Loaded |
+| Provider Form Filled | Provider Added | Settings (Security) | Appearance Settings | Web Page Loaded |
 |:--------------------:|:--------------:|:--------:|:-------------------:|:---------------:|
-| ![Filled Form](docs/screenshots/05-provider-form-filled.png) | ![Added](docs/screenshots/06-provider-added.png) | ![Settings](docs/screenshots/07-settings.png) | ![Appearance](docs/screenshots/08-appearance-settings.png) | ![Web Page](docs/screenshots/09-web-page.png) |
+| ![Filled Form](docs/screenshots-security/05-provider-form-filled.png) | ![Added](docs/screenshots-security/06-provider-added.png) | ![Settings](docs/screenshots-security/07-settings.png) | ![Appearance](docs/screenshots-security/08-appearance-settings.png) | ![Web Page](docs/screenshots-security/09-web-page.png) |
 
 ## Demo
 
 ![Demo](docs/demo.gif)
 
 [Watch full demo video (MP4)](docs/demo.mp4)
+
+### Indonesian Rhino Demo
+
+![Indonesian Rhino Demo](docs/demo-indonesian-rhino.gif)
+
+[Watch Indonesian Rhino demo video (MP4)](docs/demo-indonesian-rhino.mp4)
+
+*Searches for "badak sumatera meninggal setelah dipindahkan indonesia" (Sumatran rhino dies after being moved in Indonesia) - a real trending political/conservation issue in Indonesia.*
 
 ## Quick Start
 
