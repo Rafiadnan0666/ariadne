@@ -120,6 +120,8 @@ declare global {
         getModelSlot: (slot: string) => Promise<string>
         getModelForSlot: (slot: string) => Promise<ModelInfoDTO | null>
         getProviderTypes: () => Promise<string[]>
+        discoverModels: (type: string, baseUrl: string, apiKey?: string) => Promise<ModelInfoDTO[]>
+        addProviderAuto: (params: { type: string; name: string; baseUrl: string; apiKey?: string }) => Promise<any>
         getSystemPrompt: () => Promise<string>
         setSystemPrompt: (prompt: string) => Promise<any>
         chatComplete: (request: any) => Promise<any>

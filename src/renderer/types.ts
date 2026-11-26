@@ -60,6 +60,7 @@ export interface AppSettingsDTO {
   searchSuggestions: boolean
   doNotTrack: boolean
   clearOnExit: boolean
+  dnsOverHttps: boolean
   downloadPath: string
   aiSidebarOpen: boolean
 }

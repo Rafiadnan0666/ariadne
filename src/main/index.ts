@@ -46,6 +46,7 @@ import {
 } from './tabs'
 import { aiSystem } from './ai'
 import { registerAgentToolHandlers } from './ai/agent-tools'
+import { storeCredential } from './ai/credentials'
 import { contextService } from './context/service'
 import { downloadManager, type DownloadRecord } from './downloads'
 import {
@@ -69,6 +70,7 @@ interface AppSettings {
   searchSuggestions: boolean
   doNotTrack: boolean
   clearOnExit: boolean
+  dnsOverHttps: boolean
   downloadPath: string
   aiSidebarOpen: boolean
 }
@@ -99,6 +101,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   searchSuggestions: true,
   doNotTrack: true,
   clearOnExit: false,
+  dnsOverHttps: true,
   downloadPath: '',
   aiSidebarOpen: false,
 }
@@ -312,6 +315,10 @@ function configureSession(ses: Session, isPrivate: boolean, partition: string): 
   configureSessionPermissions(ses, (windowId) => windows.get(windowId)?.isPrivate === true)
   downloadManager.attach(ses, isPrivate)
   applyDnt(ses, getSettings().doNotTrack)
+  if (getSettings().dnsOverHttps) {
+    // DoH is enabled via app.commandLine switches at startup, not per-session.
+    // This flag is a no-op here but kept for clarity; the switch is set in app.whenReady.
+  }
 
   // Content Security Policy
   const csp = [
@@ -1082,6 +1089,34 @@ function registerIpc(): void {
   handle('ai:model-slot:get-all', async () => aiSystem.getRegistry().getAllModelSlots())
   handle('ai:model-slot:get-model', async (_event, slot) => aiSystem.getModelForSlot(slot))
   handle('ai:provider-types', async () => aiSystem.getProviderTypes())
+  handle('ai:models:discover', async (_event, type: string, baseUrl: string, apiKey?: string) => aiSystem.discoverModels(type as any, baseUrl, apiKey))
+  handle('ai:provider:add-auto', async (_event, { type, name, baseUrl, apiKey }: { type: string; name: string; baseUrl: string; apiKey?: string }) => {
+    const id = `${type}-${Date.now()}`
+    const providerType = type as any
+    const models = await aiSystem.discoverModels(providerType, baseUrl, apiKey)
+    const config: any = {
+      id,
+      name,
+      type: providerType,
+      baseUrl,
+      enabled: true,
+      models: models.map(m => ({ ...m, provider: id })),
+      defaultModel: models[0]?.id,
+    }
+    if (apiKey) {
+      await storeCredential(id, `${id}-key`, apiKey)
+      config.apiKeyRef = `${id}-key`
+    }
+    await aiSystem.addProvider(config)
+    // Auto-assign first model to fastBrowsing if no model assigned
+    const slots = aiSystem.getRegistry().getAllModelSlots()
+    const firstModel = models[0]?.id
+    if (firstModel && !slots.fastBrowsing) {
+      aiSystem.setModelSlot('fastBrowsing', firstModel)
+      if (!slots.research) aiSystem.setModelSlot('research', firstModel)
+    }
+    return { success: true, provider: config }
+  })
   handle('ai:system-prompt:get', async () => aiSystem.getSystemPrompt())
   handle('ai:system-prompt:set', async (_event, prompt) => aiSystem.setSystemPrompt(prompt))
   handle('ai:chat:complete', async (_event, request) => aiSystem.getRegistry().chatCompletion(request))
@@ -1225,6 +1260,13 @@ if (!hasLock) {
   })
 
   app.whenReady().then(async () => {
+    // Enable DNS-over-HTTPS via command line switches (must be set early)
+    if (getSettings().dnsOverHttps) {
+      app.commandLine.appendSwitch('enable-features', 'DnsOverHttps<DoHTrial')
+      app.commandLine.appendSwitch('force-fieldtrials', 'DoHTrial/Enabled')
+      app.commandLine.appendSwitch('force-fieldtrial-params', 'DoHTrial.Enabled:server/https://dns.google/dns-query')
+    }
+
     initPermissions()
     await initTabs()
     await aiSystem.getRegistry().initialize()

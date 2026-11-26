@@ -206,6 +206,23 @@ export class AISystem {
     }
   }
 
+  async discoverModels(type: ProviderType, baseUrl: string, apiKey?: string): Promise<ModelMetadata[]> {
+    const tempConfig: ProviderConfig = {
+      id: '__discover__',
+      name: 'Discover',
+      type,
+      baseUrl,
+      enabled: true,
+      models: [],
+    };
+    try {
+      return await this.registry.discoverModels(tempConfig, apiKey);
+    } catch (e) {
+      console.error('discoverModels failed:', e);
+      return [];
+    }
+  }
+
   async setApiKeys(providerId: string, apiKeys: string[]): Promise<void> {
     await this.registry.setApiKeys(providerId, apiKeys);
     const config = this.registry.getConfig(providerId);

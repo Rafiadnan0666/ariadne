@@ -174,6 +174,16 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   const [extractNonce, setExtractNonce] = useState(0)
   const [showSettings, setShowSettings] = useState(false)
   const [showProviderForm, setShowProviderForm] = useState(false)
+  const [showAutoConfig, setShowAutoConfig] = useState(false)
+  const [autoConfig, setAutoConfig] = useState({
+    type: 'openai',
+    name: '',
+    baseUrl: '',
+    apiKey: '',
+  })
+  const [autoConfigBusy, setAutoConfigBusy] = useState(false)
+  const [discoveredModels, setDiscoveredModels] = useState<ModelInfoDTO[]>([])
+  const [discoverBusy, setDiscoverBusy] = useState(false)
   const [providerForm, setProviderForm] = useState<ProviderForm>(EMPTY_PROVIDER_FORM)
   const [providerBusy, setProviderBusy] = useState(false)
   const [providerStatus, setProviderStatus] = useState<Record<string, string>>({})
@@ -657,6 +667,67 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     }
   }, [providerForm, refreshAi, notify])
 
+  const handleDiscoverModels = useCallback(async () => {
+    if (!providerForm.baseUrl.trim()) {
+      setSettingsError('Enter a base URL first.')
+      return
+    }
+    setDiscoverBusy(true)
+    setDiscoveredModels([])
+    setSettingsError('')
+    try {
+      const models = await window.electronAPI.ai.discoverModels(
+        providerForm.type,
+        providerForm.baseUrl.trim(),
+        providerForm.type !== 'lmstudio' ? providerForm.apiKey.trim() || undefined : undefined
+      )
+      if (models.length > 0) {
+        setDiscoveredModels(models)
+        setProviderForm((current) => ({ ...current, modelId: models[0].id, modelName: models[0].name }))
+        notify(`Discovered ${models.length} models. First model selected.`, 'success')
+      } else {
+        setSettingsError('No models found. Check the base URL and API key.')
+      }
+    } catch (error) {
+      setSettingsError(`Discovery failed: ${errorText(error)}`)
+    } finally {
+      setDiscoverBusy(false)
+    }
+  }, [providerForm, notify])
+
+  const handleAutoConfig = useCallback(async () => {
+    if (!autoConfig.apiKey.trim() && autoConfig.type !== 'lmstudio') {
+      setSettingsError('Enter an API key (not required for LM Studio).')
+      return
+    }
+    if (!autoConfig.name.trim()) {
+      setSettingsError('Enter a display name.')
+      return
+    }
+    setAutoConfigBusy(true)
+    setSettingsError('')
+    try {
+      const result = await window.electronAPI.ai.addProviderAuto({
+        type: autoConfig.type,
+        name: autoConfig.name.trim(),
+        baseUrl: autoConfig.baseUrl.trim() || TYPE_DEFAULTS[autoConfig.type]?.baseUrl || '',
+        apiKey: autoConfig.apiKey.trim() || undefined,
+      })
+      if (result.success) {
+        await refreshAi()
+        setAutoConfig({ type: 'openai', name: '', baseUrl: '', apiKey: '' })
+        setShowAutoConfig(false)
+        notify('Provider added, models discovered, and first model assigned.', 'success')
+      } else {
+        setSettingsError('Auto-configure failed.')
+      }
+    } catch (error) {
+      setSettingsError(`Auto-configure failed: ${errorText(error)}`)
+    } finally {
+      setAutoConfigBusy(false)
+    }
+  }, [autoConfig, refreshAi, notify])
+
   const testProvider = useCallback(
     async (provider: ProviderConfigDTO) => {
       setProviderStatus((current) => ({ ...current, [provider.id]: 'Testing…' }))
@@ -819,9 +890,14 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
             ))}
 
             {!showProviderForm ? (
-              <button className="text-btn" onClick={() => setShowProviderForm(true)}>
-                + Add provider
-              </button>
+              <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                <button className="text-btn" onClick={() => setShowProviderForm(true)}>
+                  + Add provider
+                </button>
+                <button className="primary-btn small" onClick={() => setShowAutoConfig(true)}>
+                  Add provider + key
+                </button>
+              </div>
             ) : (
               <div className="provider-form" ref={providerFormRef}>
                 <div className="provider-form-grid">
@@ -862,13 +938,45 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                       placeholder={TYPE_DEFAULTS[providerForm.type]?.baseUrl}
                     />
                   </label>
-                  <label>
+                  <label style={{ position: 'relative' }}>
                     <span>Model ID</span>
-                    <input
-                      value={providerForm.modelId}
-                      onChange={(event) => setProviderForm((current) => ({ ...current, modelId: event.target.value }))}
-                      placeholder="gpt-4o-mini"
-                    />
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'flex-end' }}>
+                      {discoveredModels.length > 0 ? (
+                        <select
+                          value={providerForm.modelId}
+                          onChange={(event) => {
+                            const model = discoveredModels.find(m => m.id === event.target.value)
+                            setProviderForm((current) => ({
+                              ...current,
+                              modelId: event.target.value,
+                              modelName: model?.name || event.target.value,
+                            }))
+                          }}
+                          style={{ flex: 1, minWidth: 0 }}
+                        >
+                          {discoveredModels.map((m) => (
+                            <option key={m.id} value={m.id}>
+                              {m.name} ({m.id})
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <input
+                          value={providerForm.modelId}
+                          onChange={(event) => setProviderForm((current) => ({ ...current, modelId: event.target.value }))}
+                          placeholder="gpt-4o-mini"
+                          style={{ flex: 1 }}
+                        />
+                      )}
+                      <button
+                        className="mini-btn"
+                        disabled={discoverBusy || !providerForm.baseUrl.trim() || (providerForm.type !== 'lmstudio' && !providerForm.apiKey.trim())}
+                        onClick={() => void handleDiscoverModels()}
+                        style={{ whiteSpace: 'nowrap', height: '32px' }}
+                      >
+                        {discoverBusy ? 'Discovering…' : 'Discover Models'}
+                      </button>
+                    </div>
                   </label>
                   <label>
                     <span>Model label</span>
@@ -908,6 +1016,71 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                 </div>
                 <div className="ai-muted">
                   Keys are stored in the OS credential vault, never in the provider JSON.
+                </div>
+              </div>
+            )}
+
+            {showAutoConfig && (
+              <div className="provider-form">
+                <h4 style={{ margin: '0 0 12px', fontSize: '12px' }}>Add Provider + Key (Auto-Configure)</h4>
+                <div className="provider-form-grid">
+                  <label>
+                    <span>Type</span>
+                    <select
+                      value={autoConfig.type}
+                      onChange={(event) => {
+                        const type = event.target.value
+                        setAutoConfig((current) => ({
+                          ...current,
+                          type,
+                          name: current.name || TYPE_DEFAULTS[type]?.name || '',
+                          baseUrl: current.baseUrl || TYPE_DEFAULTS[type]?.baseUrl || '',
+                        }))
+                      }}
+                    >
+                      {providerTypes.map((type) => (
+                        <option key={type} value={type}>
+                          {TYPE_DEFAULTS[type]?.name || type}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>Display name</span>
+                    <input
+                      value={autoConfig.name}
+                      onChange={(event) => setAutoConfig((current) => ({ ...current, name: event.target.value }))}
+                      placeholder={TYPE_DEFAULTS[autoConfig.type]?.name}
+                    />
+                  </label>
+                  <label className="span-2">
+                    <span>Base URL</span>
+                    <input
+                      value={autoConfig.baseUrl}
+                      onChange={(event) => setAutoConfig((current) => ({ ...current, baseUrl: event.target.value }))}
+                      placeholder={TYPE_DEFAULTS[autoConfig.type]?.baseUrl}
+                    />
+                  </label>
+                  <label>
+                    <span>API key</span>
+                    <input
+                      type="password"
+                      value={autoConfig.apiKey}
+                      onChange={(event) => setAutoConfig((current) => ({ ...current, apiKey: event.target.value }))}
+                      placeholder={autoConfig.type === 'lmstudio' ? 'Not required for local' : 'sk-…'}
+                    />
+                  </label>
+                </div>
+                <div className="ai-field-actions">
+                  <button className="text-btn" onClick={() => { setAutoConfig({ type: 'openai', name: '', baseUrl: '', apiKey: '' }); setShowAutoConfig(false); }}>
+                    Cancel
+                  </button>
+                  <button className="primary-btn small" disabled={autoConfigBusy} onClick={() => void handleAutoConfig()}>
+                    {autoConfigBusy ? 'Discovering models & adding…' : 'Add & configure'}
+                  </button>
+                </div>
+                <div className="ai-muted">
+                  Tests the key, fetches available models, adds the provider, and assigns the first model to the Fast slot.
                 </div>
               </div>
             )}

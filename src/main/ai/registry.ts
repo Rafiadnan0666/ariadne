@@ -305,6 +305,28 @@ export class ProviderRegistry {
     }
   }
 
+  /** Fetch available models from a provider config without persisting it. */
+  async discoverModels(config: ProviderConfig, apiKey?: string): Promise<ModelMetadata[]> {
+    const testConfig = { ...getDefaultConfig(config.type), ...config } as ProviderConfig;
+    if (apiKey) {
+      await storeCredential('__test__', 'temp', apiKey);
+      testConfig.apiKeyRef = 'temp';
+    }
+    const provider = createProvider(testConfig);
+    try {
+      await provider.initialize();
+      return await provider.listModels();
+    } catch (error) {
+      console.error(`Failed to discover models for ${config.type}:`, error);
+      return [];
+    } finally {
+      await provider.shutdown();
+      if (apiKey) {
+        await deleteCredential('__test__', 'temp').catch(() => undefined);
+      }
+    }
+  }
+
   private async startProvider(config: ProviderConfig): Promise<void> {
     try {
       const provider = createProvider(config);

@@ -304,6 +304,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                 </label>
                 <label className="toggle-row">
                   <span>
+                    <strong>DNS over HTTPS (DoH)</strong>
+                    <small>Encrypt DNS queries via Google DNS (dns.google). Prevents ISP snooping on domains you visit.</small>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={draft.dnsOverHttps}
+                    onChange={(event) => patch({ dnsOverHttps: event.target.checked })}
+                  />
+                </label>
+                <label className="toggle-row">
+                  <span>
                     <strong>Clear browsing data on exit</strong>
                     <small>History and site storage for normal windows are removed when Ariadne quits.</small>
                   </span>
