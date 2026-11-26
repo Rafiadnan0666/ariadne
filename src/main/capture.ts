@@ -272,8 +272,9 @@ export async function runCapture(directory: string, getWindow: () => BrowserWind
     `window.electronAPI.tab.getAll().then((tabs) => (tabs.find((t) => t.active) || tabs[0] || {}).id)`
   )) as string | undefined
   if (tabId) {
-    await run(window, `window.electronAPI.tab.navigate('${tabId}', 'https://www.google.com/search?q=badak+sumatera+meninggal+setelah+dipindahkan+indonesia')`)
-    await delay(5000)
+    // Test on a heavy-ad news site
+    await run(window, `window.electronAPI.tab.navigate('${tabId}', 'https://www.detik.com')`)
+    await delay(8000)
     const tabState = await run(
       window,
       `window.electronAPI.tab.getAll().then((tabs) => tabs.map((t) => ({ title: t.title, url: t.url, loading: t.loading })))`

@@ -69,6 +69,10 @@ import {
   checkUrlSafe,
   checkPasswordBreach,
   type SecurityConfig,
+getAdBlockAllowlist,
+  addAdBlockAllowlistSite,
+  removeAdBlockAllowlistSite,
+  downloadAndParseLists,
 } from './security'
 
 interface AppSettings {
@@ -1215,6 +1219,19 @@ function registerIpc(): void {
   handle('security:refresh-adblock', async () => {
     const { refreshAdBlockLists } = await import('./security')
     await refreshAdBlockLists()
+    return { success: true }
+  })
+  handle('security:adblock:allowlist:get', async () => getAdBlockAllowlist())
+  handle('security:adblock:allowlist:add', async (_event, domain: string) => {
+    await addAdBlockAllowlistSite(domain)
+    return { success: true }
+  })
+  handle('security:adblock:allowlist:remove', async (_event, domain: string) => {
+    await removeAdBlockAllowlistSite(domain)
+    return { success: true }
+  })
+  handle('security:adblock:download-lists', async () => {
+    await downloadAndParseLists()
     return { success: true }
   })
 

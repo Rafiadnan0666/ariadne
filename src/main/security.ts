@@ -144,21 +144,60 @@ export function applyInsecureWarnings(ses: Session, enabled: boolean, warnPrivat
 
 // --- Ad/Tracker Blocking (declarativeNetRequest) ---
 const ADBLOCK_RULES_FILE = path.join(app.getPath('userData'), 'adblock-rules.json')
-const ADBLOCK_LIST_URLS = [
-  'https://easylist.to/easylist/easylist.txt',
-  'https://easylist.to/easylist/easyprivacy.txt',
-  'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances.txt',
+type ListType = 'ads' | 'trackers' | 'annoyances'
+const ADBLOCK_LIST_URLS: Array<{ url: string; type: ListType }> = [
+  { url: 'https://easylist.to/easylist/easylist.txt', type: 'ads' },
+  { url: 'https://easylist.to/easylist/easyprivacy.txt', type: 'trackers' },
+  { url: 'https://raw.githubusercontent.com/uBlockOrigin/uAssets/master/filters/annoyances.txt', type: 'annoyances' },
 ]
+
+const ADBLOCK_ALLOWLIST_FILE = path.join(app.getPath('userData'), 'adblock-allowlist.json')
 
 let adblockRules: any[] = []
 let ruleIdCounter = 1
+let allowlist: string[] = []
 
 export async function initAdBlocker(ses: Session): Promise<void> {
   const cfg = getSbConfig()
   if (!cfg.blockAds && !cfg.blockTrackers) return
 
+  await loadAllowlist()
   await loadAdBlockRules()
   await applyAdBlockRules(ses)
+}
+
+async function loadAllowlist(): Promise<void> {
+  if (fs.existsSync(ADBLOCK_ALLOWLIST_FILE)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(ADBLOCK_ALLOWLIST_FILE, 'utf-8'))
+      allowlist = data.sites || []
+      console.log(`[AdBlock] Loaded ${allowlist.length} sites from allowlist`)
+    } catch {}
+  }
+}
+
+async function saveAllowlist(): Promise<void> {
+  fs.writeFileSync(ADBLOCK_ALLOWLIST_FILE, JSON.stringify({ sites: allowlist }, null, 2))
+}
+
+export function getAdBlockAllowlist(): string[] {
+  return [...allowlist]
+}
+
+export async function addAdBlockAllowlistSite(domain: string): Promise<void> {
+  const normalized = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '')
+  if (!allowlist.includes(normalized)) {
+    allowlist.push(normalized)
+    await saveAllowlist()
+    await refreshAdBlockLists()
+  }
+}
+
+export async function removeAdBlockAllowlistSite(domain: string): Promise<void> {
+  const normalized = domain.toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '')
+  allowlist = allowlist.filter(s => s !== normalized)
+  await saveAllowlist()
+  await refreshAdBlockLists()
 }
 
 async function loadAdBlockRules(): Promise<void> {
@@ -226,6 +265,114 @@ function generateBuiltinRules(): any[] {
   return rules
 }
 
+function parseEasyList(text: string, listType: 'ads' | 'trackers' | 'annoyances'): any[] {
+  const rules: any[] = []
+  const lines = text.split('\n')
+  
+  for (const line of lines) {
+    const trimmed = line.trim()
+    if (!trimmed || trimmed.startsWith('!') || trimmed.startsWith('[')) continue
+    
+    // Skip exception rules (@@) for now
+    if (trimmed.startsWith('@@')) continue
+    
+    // Convert Adblock Plus filter to declarativeNetRequest rule
+    let urlFilter = trimmed
+    
+    // Handle domain restrictions (e.g., "||example.com^$domain=example.org")
+    const domainMatch = trimmed.match(/\$domain=([^,\s]+)/)
+    const domains = domainMatch ? domainMatch[1].split('|') : undefined
+    
+    // Clean up the filter
+    urlFilter = trimmed
+      .replace(/\$.*$/, '') // Remove options
+      .replace(/^\|\|/, '||') // Keep domain anchor
+      .replace(/\^$/, '') // Remove separator anchor
+      .replace(/^\|/, '') // Remove start anchor
+      .replace(/\|$/, '') // Remove end anchor
+    
+    if (!urlFilter || urlFilter.length < 3) continue
+    
+    // Determine resource types based on list type
+    const resourceTypes = listType === 'trackers' 
+      ? ['script', 'xmlhttprequest', 'image', 'sub_frame']
+      : ['script', 'image', 'xmlhttprequest', 'sub_frame', 'stylesheet']
+    
+    rules.push({
+      id: ruleIdCounter++,
+      priority: 1,
+      action: { type: 'block' },
+      condition: {
+        urlFilter,
+        resourceTypes,
+        ...(domains ? { domains } : {}),
+        ...(domains ? { excludedDomains: domains.filter(d => d.startsWith('~')).map(d => d.substring(1)) } : {}),
+      },
+    })
+  }
+  
+  return rules
+}
+
+export async function downloadAndParseLists(): Promise<void> {
+  console.log('[AdBlock] Downloading filter lists...')
+  let newRules = generateBuiltinRules()
+  ruleIdCounter = newRules.length + 1
+  
+  for (const list of ADBLOCK_LIST_URLS) {
+    try {
+      const response = await fetch(list.url)
+      if (!response.ok) {
+        console.warn(`[AdBlock] Failed to download ${list.url}: ${response.status}`)
+        continue
+      }
+      const text = await response.text()
+      const parsed = parseEasyList(text, list.type)
+      console.log(`[AdBlock] Parsed ${parsed.length} rules from ${list.type}`)
+      newRules = newRules.concat(parsed)
+    } catch (e) {
+      console.error(`[AdBlock] Error downloading ${list.url}:`, e)
+    }
+  }
+  
+  // Apply allowlist exceptions
+  newRules = applyAllowlistExceptions(newRules)
+  
+  adblockRules = newRules
+  await saveAdBlockRules()
+  console.log(`[AdBlock] Total rules: ${adblockRules.length}`)
+}
+
+function applyAllowlistExceptions(rules: any[]): any[] {
+  if (allowlist.length === 0) return rules
+  
+  // For each rule, add excludedDomains for allowlisted sites
+  return rules.map(rule => {
+    if (rule.condition && rule.condition.urlFilter) {
+      return {
+        ...rule,
+        condition: {
+          ...rule.condition,
+          excludedDomains: [...(rule.condition.excludedDomains || []), ...allowlist],
+        },
+      }
+    }
+    return rule
+  })
+}
+
+export async function refreshAdBlockLists(): Promise<void> {
+  await downloadAndParseLists()
+  await saveAdBlockRules()
+  
+  // Re-apply to all sessions
+  for (const state of (global as any).windows?.values() || []) {
+    try {
+      await applyAdBlockRules(session.fromPartition(state.partition))
+    } catch {}
+  }
+}
+
 async function saveAdBlockRules(): Promise<void> {
   fs.writeFileSync(ADBLOCK_RULES_FILE, JSON.stringify({ rules: adblockRules, nextId: ruleIdCounter }))
 }
@@ -256,16 +403,6 @@ async function applyAdBlockRules(ses: Session): Promise<void> {
     }
   } catch (e) {
     console.error('[AdBlock] Failed to apply rules:', e)
-  }
-}
-
-export async function refreshAdBlockLists(): Promise<void> {
-  adblockRules = generateBuiltinRules()
-  await saveAdBlockRules()
-  for (const state of (global as any).windows?.values() || []) {
-    try {
-      await applyAdBlockRules(session.fromPartition(state.partition))
-    } catch {}
   }
 }
 

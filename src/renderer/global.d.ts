@@ -193,6 +193,12 @@ declare global {
         checkUrl: (url: string) => Promise<{ safe: boolean; threatType?: string }>
         checkPassword: (password: string) => Promise<{ breached: boolean; count: number }>
         refreshAdBlock: () => Promise<{ success: boolean }>
+        adblock: {
+          getAllowlist: () => Promise<string[]>
+          addAllowlistSite: (domain: string) => Promise<{ success: boolean }>
+          removeAllowlistSite: (domain: string) => Promise<{ success: boolean }>
+          downloadLists: () => Promise<{ success: boolean }>
+        }
       }
       on: (channel: string, callback: (...args: any[]) => void) => () => void
       ready: () => Promise<unknown>

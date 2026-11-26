@@ -194,6 +194,12 @@ const security = {
   checkUrl: (url: string) => invoke<{ safe: boolean; threatType?: string }>('security:check-url', url),
   checkPassword: (password: string) => invoke<{ breached: boolean; count: number }>('security:check-password', password),
   refreshAdBlock: () => invoke<{ success: boolean }>('security:refresh-adblock'),
+  adblock: {
+    getAllowlist: () => invoke<string[]>('security:adblock:allowlist:get'),
+    addAllowlistSite: (domain: string) => invoke<{ success: boolean }>('security:adblock:allowlist:add', domain),
+    removeAllowlistSite: (domain: string) => invoke<{ success: boolean }>('security:adblock:allowlist:remove', domain),
+    downloadLists: () => invoke<{ success: boolean }>('security:adblock:download-lists'),
+  },
 }
 
 const appApi = {

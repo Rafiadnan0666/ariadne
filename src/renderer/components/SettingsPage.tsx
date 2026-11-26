@@ -461,6 +461,17 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   <button className="secondary-btn small" onClick={() => void window.electronAPI.security.refreshAdBlock()}>
                     <Icon name="refresh" size={13} /> Update block lists now
                   </button>
+                  <button className="secondary-btn small" onClick={() => void window.electronAPI.security.adblock.downloadLists()}>
+                    <Icon name="download" size={13} /> Download full EasyList/EasyPrivacy
+                  </button>
+                </div>
+
+                <div className="settings-subsection">
+                  <h4>Ad Blocker Allowlist (per-site disable)</h4>
+                  <p className="settings-note">
+                    Sites added here will not have ads/trackers blocked. Useful for sites that break or to support creators.
+                  </p>
+                  <AdBlockAllowlist />
                 </div>
 
                 <div className="settings-subsection">
@@ -582,6 +593,92 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
             )}
           </div>
         </div>
+      </div>
+    </div>
+  )
+}
+
+const AdBlockAllowlist: React.FC = () => {
+  const [allowlist, setAllowlist] = useState<string[]>([])
+  const [loading, setLoading] = useState(true)
+  const [newSite, setNewSite] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    loadAllowlist()
+  }, [])
+
+  const loadAllowlist = async () => {
+    try {
+      setLoading(true)
+      const sites = await window.electronAPI.security.adblock.getAllowlist()
+      setAllowlist(sites)
+      setError('')
+    } catch (e) {
+      setError('Failed to load allowlist: ' + String(e))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleAdd = async () => {
+    const domain = newSite.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/^www\./, '')
+    if (!domain) return
+    try {
+      await window.electronAPI.security.adblock.addAllowlistSite(domain)
+      setNewSite('')
+      await loadAllowlist()
+    } catch (e) {
+      setError('Failed to add site: ' + String(e))
+    }
+  }
+
+  const handleRemove = async (domain: string) => {
+    try {
+      await window.electronAPI.security.adblock.removeAllowlistSite(domain)
+      await loadAllowlist()
+    } catch (e) {
+      setError('Failed to remove site: ' + String(e))
+    }
+  }
+
+  if (loading) return <div className="ai-muted">Loading allowlist...</div>
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+        <input
+          type="text"
+          value={newSite}
+          onChange={(e) => setNewSite(e.target.value)}
+          placeholder="example.com"
+          style={{ flex: 1, minWidth: '200px' }}
+          onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+        />
+        <button className="primary-btn small" onClick={handleAdd} disabled={!newSite.trim()}>
+          <Icon name="plus" size={13} /> Add site
+        </button>
+        <button className="secondary-btn small" onClick={async () => {
+          await window.electronAPI.security.adblock.downloadLists()
+          await loadAllowlist()
+        }}>
+          <Icon name="download" size={13} /> Download full lists
+        </button>
+      </div>
+      {error && <div className="ai-muted" style={{ color: 'var(--color-error, #f7768e)' }}>{error}</div>}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+        {allowlist.length === 0 ? (
+          <span className="ai-muted">No sites in allowlist</span>
+        ) : (
+          allowlist.map((site) => (
+            <span key={site} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--color-bg-elevated)', padding: '4px 8px', borderRadius: '4px' }}>
+              <span>{site}</span>
+              <button className="icon-btn tiny" onClick={() => handleRemove(site)} aria-label={`Remove ${site}`}>
+                <Icon name="x" size={11} />
+              </button>
+            </span>
+          ))
+        )}
       </div>
     </div>
   )
