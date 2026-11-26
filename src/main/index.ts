@@ -71,6 +71,14 @@ interface AppSettings {
   doNotTrack: boolean
   clearOnExit: boolean
   dnsOverHttps: boolean
+  // Security
+  safeBrowsing: 'enhanced' | 'standard' | 'none'
+  httpsOnly: boolean
+  warnInsecure: boolean
+  passwordBreachCheck: boolean
+  blockAds: boolean
+  blockTrackers: boolean
+  downloadScanning: boolean
   downloadPath: string
   aiSidebarOpen: boolean
 }
@@ -102,6 +110,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   doNotTrack: true,
   clearOnExit: false,
   dnsOverHttps: true,
+  safeBrowsing: 'standard',
+  httpsOnly: false,
+  warnInsecure: true,
+  passwordBreachCheck: true,
+  blockAds: true,
+  blockTrackers: true,
+  downloadScanning: true,
   downloadPath: '',
   aiSidebarOpen: false,
 }
