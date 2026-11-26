@@ -190,6 +190,12 @@ const context = {
   markTabPrivate: (tabId: string, isPrivate: boolean) => invoke<any>('context:mark-tab-private', tabId, isPrivate),
 }
 
+const security = {
+  checkUrl: (url: string) => invoke<{ safe: boolean; threatType?: string }>('security:check-url', url),
+  checkPassword: (password: string) => invoke<{ breached: boolean; count: number }>('security:check-password', password),
+  refreshAdBlock: () => invoke<{ success: boolean }>('security:refresh-adblock'),
+}
+
 const appApi = {
   getInfo: () => invoke<any>('app:info'),
   openExternal: (url: string) => invoke<void>('app:open-external', url),
@@ -209,6 +215,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   ai,
   memory,
   context,
+  security,
   app: appApi,
 
   // Backwards-compatible flat aliases used by older components.

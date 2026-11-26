@@ -59,6 +59,17 @@ import {
 } from './permissions'
 import { installApplicationMenu, type ShortcutAction } from './menu'
 import { SEARCH_ENGINES } from '../shared/search-engines'
+import {
+  initSafeBrowsing,
+  applyHttpsOnly,
+  applyInsecureWarnings,
+  initAdBlocker,
+  applySecurityHeaders,
+  shutdownSecurity,
+  checkUrlSafe,
+  checkPasswordBreach,
+  type SecurityConfig,
+} from './security'
 
 interface AppSettings {
   theme: 'dark' | 'light' | 'system'
@@ -276,7 +287,7 @@ function isTabDiscarded(tabId: string): boolean {
   return discardedTabs.has(tabId)
 }
 
-function getSettings(): AppSettings {
+export function getSettings(): AppSettings {
   const stored = settingsStore.get('settings')
   const merged = { ...DEFAULT_SETTINGS, ...(stored && typeof stored === 'object' ? stored : {}) } as AppSettings
   if (!merged.downloadPath) {
@@ -330,10 +341,13 @@ function configureSession(ses: Session, isPrivate: boolean, partition: string): 
   configureSessionPermissions(ses, (windowId) => windows.get(windowId)?.isPrivate === true)
   downloadManager.attach(ses, isPrivate)
   applyDnt(ses, getSettings().doNotTrack)
-  if (getSettings().dnsOverHttps) {
-    // DoH is enabled via app.commandLine switches at startup, not per-session.
-    // This flag is a no-op here but kept for clarity; the switch is set in app.whenReady.
-  }
+
+  // Security features
+  const cfg = getSettings()
+  applyHttpsOnly(ses, cfg.httpsOnly)
+  applyInsecureWarnings(ses, cfg.warnInsecure, false)
+  initAdBlocker(ses).catch(console.error)
+  applySecurityHeaders(ses)
 
   // Content Security Policy
   const csp = [
@@ -355,7 +369,7 @@ function configureSession(ses: Session, isPrivate: boolean, partition: string): 
   ses.webRequest.onHeadersReceived((details, callback) => {
     const responseHeaders = details.responseHeaders || {}
     responseHeaders['Content-Security-Policy'] = [csp]
-    responseHeaders['X-Content-Type-Options'] = ['nosniff']
+    responseHeaders['X-Content-Type-Options'] = ['nosiff']
     responseHeaders['X-Frame-Options'] = ['DENY']
     responseHeaders['X-XSS-Protection'] = ['1; mode=block']
     responseHeaders['Referrer-Policy'] = ['strict-origin-when-cross-origin']
@@ -1195,6 +1209,15 @@ function registerIpc(): void {
   handle('memory:discarded-tabs', async () => Array.from(discardedTabs.entries()).map(([id, info]) => ({ id, ...info })))
   handle('tab:is-discarded', async (_event, tabId: string) => isTabDiscarded(tabId))
 
+  // Security ----------------------------------------------------------------
+  handle('security:check-url', async (_event, url: string) => checkUrlSafe(url))
+  handle('security:check-password', async (_event, password: string) => checkPasswordBreach(password))
+  handle('security:refresh-adblock', async () => {
+    const { refreshAdBlockLists } = await import('./security')
+    await refreshAdBlockLists()
+    return { success: true }
+  })
+
   handle('ai:extract-page', async (event, tabId: string) => {
     tabForEvent(event, tabId)
     return aiSystem.extractPage(tabId)
@@ -1288,6 +1311,7 @@ if (!hasLock) {
     registerAgentToolHandlers()
     installApplicationMenu()
     registerIpc()
+    initSafeBrowsing()
     createBrowserWindow()
     restartMemoryMonitor()
 
@@ -1330,6 +1354,7 @@ if (!hasLock) {
         }
         await aiSystem.shutdown()
         contextService.dispose()
+        shutdownSecurity()
         await closeDatabase()
       } catch (error) {
         console.error('Shutdown cleanup failed:', error)

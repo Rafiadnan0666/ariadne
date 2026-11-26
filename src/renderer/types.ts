@@ -61,6 +61,14 @@ export interface AppSettingsDTO {
   doNotTrack: boolean
   clearOnExit: boolean
   dnsOverHttps: boolean
+  // Security
+  safeBrowsing: 'enhanced' | 'standard' | 'none'
+  httpsOnly: boolean
+  warnInsecure: boolean
+  passwordBreachCheck: boolean
+  blockAds: boolean
+  blockTrackers: boolean
+  downloadScanning: boolean
   downloadPath: string
   aiSidebarOpen: boolean
 }

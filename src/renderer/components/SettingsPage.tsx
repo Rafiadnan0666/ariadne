@@ -7,6 +7,7 @@ export type SettingsSection =
   | 'appearance'
   | 'search'
   | 'privacy'
+  | 'security'
   | 'shortcuts'
   | 'ai'
   | 'about'
@@ -28,6 +29,7 @@ const SECTIONS: Array<{ id: SettingsSection; label: string; icon: IconName }> = 
   { id: 'appearance', label: 'Appearance', icon: 'panel' },
   { id: 'search', label: 'Search', icon: 'search' },
   { id: 'privacy', label: 'Privacy', icon: 'shield' },
+  { id: 'security', label: 'Security', icon: 'lock' },
   { id: 'shortcuts', label: 'Shortcuts', icon: 'copy' },
   { id: 'ai', label: 'AI', icon: 'sparkle' },
   { id: 'about', label: 'About', icon: 'globe' },
@@ -351,6 +353,138 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                   </button>
                   <p className="settings-note">
                     Private windows already use an isolated, in-memory profile that is discarded when the window closes.
+                  </p>
+                </div>
+              </section>
+            )}
+
+            {section === 'security' && (
+              <section className="settings-section">
+                <h3>Security</h3>
+
+                <div className="settings-subsection">
+                  <h4>Safe Browsing</h4>
+                  <p className="settings-note">
+                    Protects against dangerous sites, downloads, and extensions. Enhanced mode sends hashed URL prefixes to Safe Browsing API.
+                  </p>
+                  <div className="radio-group">
+                    {(['enhanced', 'standard', 'none'] as const).map((mode) => (
+                      <label key={mode} className="radio-row">
+                        <input
+                          type="radio"
+                          name="safeBrowsing"
+                          checked={draft.safeBrowsing === mode}
+                          onChange={() => patch({ safeBrowsing: mode })}
+                        />
+                        <div>
+                          <strong>
+                            {mode === 'enhanced' ? 'Enhanced protection' : mode === 'standard' ? 'Standard protection' : 'No protection (not recommended)'}
+                          </strong>
+                          <small>
+                            {mode === 'enhanced'
+                              ? 'Real-time, AI-powered protection. Sends hashed URL prefixes to Safe Browsing API.'
+                              : mode === 'standard'
+                              ? 'Protects against known dangerous sites. Sends obfuscated URL portions via privacy server.'
+                              : 'Does not protect against dangerous websites.'}
+                          </small>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="settings-subsection">
+                  <h4>Secure Connections</h4>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Always use secure connections (HTTPS-Only)</strong>
+                      <small>Upgrade all HTTP requests to HTTPS. Blocks connections that cannot be upgraded.</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={draft.httpsOnly}
+                      onChange={(event) => patch({ httpsOnly: event.target.checked })}
+                    />
+                  </label>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Warn for insecure sites</strong>
+                      <small>Show a warning before visiting HTTP sites (including private networks like intranet).</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={draft.warnInsecure}
+                      onChange={(event) => patch({ warnInsecure: event.target.checked })}
+                    />
+                  </label>
+                </div>
+
+                <div className="settings-subsection">
+                  <h4>Passwords</h4>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Warn if password was compromised in a data breach</strong>
+                      <small>Checks passwords against HaveIBeenPwned using k-anonymity (only first 5 chars of SHA-1 hash sent).</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={draft.passwordBreachCheck}
+                      onChange={(event) => patch({ passwordBreachCheck: event.target.checked })}
+                    />
+                  </label>
+                </div>
+
+                <div className="settings-subsection">
+                  <h4>Content Blocking</h4>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Block ads</strong>
+                      <small>Blocks ad networks using EasyList (updated automatically).</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={draft.blockAds}
+                      onChange={(event) => patch({ blockAds: event.target.checked })}
+                    />
+                  </label>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Block trackers</strong>
+                      <small>Blocks tracking scripts using EasyPrivacy (updated automatically).</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={draft.blockTrackers}
+                      onChange={(event) => patch({ blockTrackers: event.target.checked })}
+                    />
+                  </label>
+                  <button className="secondary-btn small" onClick={() => void window.electronAPI.security.refreshAdBlock()}>
+                    <Icon name="refresh" size={13} /> Update block lists now
+                  </button>
+                </div>
+
+                <div className="settings-subsection">
+                  <h4>Downloads</h4>
+                  <label className="toggle-row">
+                    <span>
+                      <strong>Scan downloads for malware</strong>
+                      <small>Checks file hashes against local threat database (placeholder for VirusTotal integration).</small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={draft.downloadScanning}
+                      onChange={(event) => patch({ downloadScanning: event.target.checked })}
+                    />
+                  </label>
+                </div>
+
+                <div className="settings-subsection">
+                  <h4>Certificates</h4>
+                  <button className="secondary-btn small" onClick={() => window.electronAPI.app.openExternal('chrome://settings/certificates')}>
+                    <Icon name="shield" size={13} /> Manage certificates
+                  </button>
+                  <p className="settings-note">
+                    Opens the Chromium certificate manager for HTTPS/SSL certificates.
                   </p>
                 </div>
               </section>

@@ -189,6 +189,11 @@ declare global {
           permissions?: boolean
         }) => Promise<boolean>
       }
+      security: {
+        checkUrl: (url: string) => Promise<{ safe: boolean; threatType?: string }>
+        checkPassword: (password: string) => Promise<{ breached: boolean; count: number }>
+        refreshAdBlock: () => Promise<{ success: boolean }>
+      }
       on: (channel: string, callback: (...args: any[]) => void) => () => void
       ready: () => Promise<unknown>
     }
