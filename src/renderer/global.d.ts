@@ -105,11 +105,14 @@ declare global {
         getConfig: () => Promise<any>
         updateConfig: (updates: any) => Promise<any>
         getProviders: () => Promise<ProviderConfigDTO[]>
-        addProvider: (config: any, apiKey?: string) => Promise<any>
+        addProvider: (config: any, apiKeys?: string[]) => Promise<any>
         removeProvider: (id: string) => Promise<any>
-        testProvider: (id: string, apiKey?: string) => Promise<{ success: boolean; error?: string }>
-        setApiKey: (providerId: string, keyName: string, apiKey: string) => Promise<any>
-        getMaskedKey: (providerId: string, keyName: string) => Promise<string | null>
+        testProvider: (id: string, apiKeys?: string[]) => Promise<{ success: boolean; error?: string }>
+        setApiKeys: (providerId: string, apiKeys: string[]) => Promise<any>
+        addApiKey: (providerId: string, apiKey: string) => Promise<any>
+        removeApiKey: (providerId: string, keyIndex: number) => Promise<any>
+        getMaskedKeys: (providerId: string) => Promise<string[]>
+        getKeyCount: (providerId: string) => Promise<number>
         getModels: () => Promise<ModelInfoDTO[]>
         getModelsForProvider: (providerId: string) => Promise<ModelInfoDTO[]>
         getModelSlots: () => Promise<Record<string, string>>
@@ -130,6 +133,23 @@ declare global {
         contextIngest: (tabId: string) => Promise<void>
         getUsage: (providerId?: string, since?: number) => Promise<any[]>
         getTotalUsage: (since?: number) => Promise<any>
+        getAgentTools: () => Promise<any[]>
+        runAgent: (request: any, context: { tabId: string; windowId?: number }) => Promise<any>
+        approveTool: (toolCallId: string, approved: boolean) => Promise<any>
+        onAgentStep: (
+          callback: (step: { type: 'plan' | 'execute' | 'observe'; content: string }) => void
+        ) => () => void
+        onAgentToolCall: (
+          callback: (payload: { toolCall: any; preview: string; requiresApproval: boolean }) => void
+        ) => () => void
+      }
+      memory: {
+        getConfig: () => Promise<any>
+        setConfig: (patch: any) => Promise<any>
+        check: () => Promise<any>
+        getDiscardedTabs: () => Promise<any[]>
+        isTabDiscarded: (tabId: string) => Promise<boolean>
+        onStats: (callback: (stats: { totalMB: number; budgetMB: number; heapUsedMB: number }) => void) => () => void
       }
       context: {
         getState: () => Promise<PickerState>

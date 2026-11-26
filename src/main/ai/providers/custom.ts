@@ -32,6 +32,11 @@ export class CustomProvider extends BaseProvider {
     return this.config.baseUrl || '';
   }
 
+  protected requiresApiKey(): boolean {
+    // Generic OpenAI-compatible endpoints are often self-hosted and keyless.
+    return false;
+  }
+
   protected getAuthHeaders(): Record<string, string> {
     const key = this.getCurrentApiKey();
     if (this.customConfig.authHeaderBuilder) {

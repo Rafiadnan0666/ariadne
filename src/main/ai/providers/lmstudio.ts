@@ -20,6 +20,10 @@ export class LMStudioProvider extends BaseProvider {
     return 'http://localhost:1234/v1';
   }
 
+  protected requiresApiKey(): boolean {
+    return false;
+  }
+
   protected getAuthHeaders(): Record<string, string> {
     const key = this.getCurrentApiKey();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };

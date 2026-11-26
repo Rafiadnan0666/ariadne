@@ -20,28 +20,9 @@ export interface AIConfig {
 }
 
 const DEFAULT_CONFIG: AIConfig = {
-  providers: [
-    {
-      id: 'lmstudio-local',
-      name: 'LM Studio (Local)',
-      type: 'lmstudio',
-      baseUrl: 'http://localhost:1234/v1',
-      enabled: true,
-      models: [
-        {
-          id: 'local-model',
-          name: 'Local Model',
-          provider: 'lmstudio-local',
-          capabilities: {
-            contextWindow: 4096,
-            supportsVision: false,
-            supportsTools: false,
-            supportsStreaming: true,
-          },
-        },
-      ],
-    },
-  ],
+  // No provider is seeded: the user explicitly adds one, so the sidebar
+  // never advertises a placeholder model that cannot answer.
+  providers: [],
   modelSlots: {
     fastBrowsing: '',
     research: '',
@@ -191,12 +172,25 @@ export class AISystem {
     if (config.enabled) {
       await this.registry.addProvider(config, apiKeys);
     }
+    // First usable provider becomes the default for quick tasks, so the
+    // user can chat immediately instead of hunting for the slot picker.
+    const slots = this.registry.getAllModelSlots();
+    const modelId = config.defaultModel || config.models?.[0]?.id;
+    if (config.enabled && modelId && !slots.fastBrowsing) {
+      this.registry.setModelSlot('fastBrowsing', modelId);
+      if (!slots.research) this.registry.setModelSlot('research', modelId);
+      this.config.modelSlots.fastBrowsing = modelId;
+      if (!this.config.modelSlots.research) this.config.modelSlots.research = modelId;
+      this.saveConfig(this.config);
+    }
   }
 
   async removeProvider(id: string): Promise<void> {
     this.config.providers = this.config.providers.filter(p => p.id !== id);
-    this.saveConfig(this.config);
     await this.registry.removeProvider(id);
+    // Registry is authoritative for slots after a removal.
+    this.config.modelSlots = { ...this.config.modelSlots, ...this.registry.getAllModelSlots() };
+    this.saveConfig(this.config);
   }
 
   async testProvider(id: string, apiKeys?: string[]): Promise<{ success: boolean; error?: string }> {

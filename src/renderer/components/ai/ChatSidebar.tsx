@@ -25,20 +25,51 @@ interface PageContext {
   isPrivate: boolean
 }
 
-interface SourceChip {
-  tabId: string
-  title: string
-  url: string
+interface ToolCall {
+  id: string
+  type: 'function'
+  function: { name: string; arguments: string }
+}
+
+interface AgentToolDefinition {
+  type: 'function'
+  function: {
+    name: string
+    description: string
+    parameters: Record<string, unknown>
+  }
+}
+
+interface AgentStep {
+  type: 'plan' | 'execute' | 'observe'
+  content: string
+}
+
+interface ToolResult {
+  success: boolean
+  result?: unknown
+  error?: string
+  requiresApproval?: boolean
+  preview?: string
+}
+
+interface PendingToolCall {
+  toolCall: ToolCall
+  preview: string
+  requiresApproval: boolean
+  resolve: (approved: boolean) => void
 }
 
 interface ChatMessage {
   id: string
-  role: 'user' | 'assistant'
+  role: 'user' | 'assistant' | 'system' | 'tool'
   content: string
   streaming?: boolean
   stopped?: boolean
   error?: string
-  sources?: SourceChip[]
+  sources?: Array<{ tabId: string; url: string; title: string }>
+  toolCalls?: ToolCall[]
+  toolResults?: Array<{ toolCallId: string; success: boolean; result?: unknown; error?: string }>
 }
 
 interface ChatSidebarProps {
@@ -50,7 +81,7 @@ interface ChatSidebarProps {
   onOpenTab: (tabId: string) => void
   onOpenContext: () => void
   onOpenSettings: () => void
-  notify: (text: string, kind?: 'info' | 'error' | 'success') => void
+  notify: (message: string, type?: 'info' | 'success' | 'error' | 'warning') => void
 }
 
 interface ProviderForm {
@@ -147,9 +178,18 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
   const [providerBusy, setProviderBusy] = useState(false)
   const [providerStatus, setProviderStatus] = useState<Record<string, string>>({})
   const [settingsError, setSettingsError] = useState('')
+  const providerFormRef = useRef<HTMLDivElement>(null)
 
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const activeRequestRef = useRef<string | null>(null)
+
+  // Agent state
+  const [agentMode, setAgentMode] = useState(false)
+  const [agentTools, setAgentTools] = useState<AgentToolDefinition[]>([])
+  const [agentSteps, setAgentSteps] = useState<AgentStep[]>([])
+  const [agentRunning, setAgentRunning] = useState(false)
+  const [pendingToolCall, setPendingToolCall] = useState<PendingToolCall | null>(null)
+  const [pendingToolCalls, setPendingToolCalls] = useState<PendingToolCall[]>([])
   const messagesRef = useRef<ChatMessage[]>([])
 
   messagesRef.current = messages
@@ -199,6 +239,15 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen])
 
+  // Opening the provider form must not leave it hidden below the fold.
+  useEffect(() => {
+    if (!showProviderForm) return
+    const timer = window.setTimeout(() => {
+      providerFormRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    }, 40)
+    return () => window.clearTimeout(timer)
+  }, [showProviderForm])
+
   // Extract the active page when it changes ------------------------------
   useEffect(() => {
     if (!isOpen || !includePage) {
@@ -247,6 +296,32 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     }
   }, [isOpen, includePage, activeTab?.id, activeTab?.url, isPrivate, extractNonce])
 
+  // Agent: load available tools
+  useEffect(() => {
+    if (!isOpen) return
+    window.electronAPI.ai.getAgentTools().then(setAgentTools).catch(console.error)
+  }, [isOpen])
+
+  // Agent: listen for step updates
+  useEffect(() => {
+    if (!isOpen || !agentRunning) return
+    const unsub = window.electronAPI.ai.onAgentStep((step: AgentStep) => {
+      setAgentSteps((prev) => [...prev, step])
+    })
+    return () => unsub()
+  }, [isOpen, agentRunning])
+
+  // Agent: listen for tool calls requiring approval
+  useEffect(() => {
+    if (!isOpen || !agentRunning) return
+    const unsub = window.electronAPI.ai.onAgentToolCall((payload: { toolCall: ToolCall; preview: string; requiresApproval: boolean }) => {
+      const promise = new Promise<boolean>((resolve) => {
+        setPendingToolCalls((prev) => [...prev, { toolCall: payload.toolCall, preview: payload.preview, requiresApproval: payload.requiresApproval, resolve }])
+      })
+    })
+    return () => unsub()
+  }, [isOpen, agentRunning])
+
   const currentModel = models.find((model) => model.id === slots[selectedSlot]) || null
   const contextWindow = currentModel?.capabilities.contextWindow || 8192
   const historyTokens = useMemo(
@@ -286,6 +361,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
 
       for (const message of history) {
         if (!message.content.trim() || message.error) continue
+        if (message.role !== 'user' && message.role !== 'assistant') continue
         chatMessages.push({ role: message.role, content: message.content })
       }
       chatMessages.push({ role: 'user', content: text })
@@ -401,6 +477,9 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       current.map((message) => (message.streaming ? { ...message, streaming: false, stopped: true } : message))
     )
     setLoading(false)
+    setAgentRunning(false)
+    setAgentSteps([])
+    setPendingToolCalls([])
   }, [])
 
   const retry = useCallback(
@@ -414,6 +493,97 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       void sendMessage(user.content, history)
     },
     [sendMessage]
+  )
+
+  // Agent: run agent loop
+  const runAgent = useCallback(
+    async (text: string, baseMessages: ChatMessage[] = messagesRef.current) => {
+      const trimmed = text.trim()
+      if (!trimmed || loading) return
+      if (!currentModel) {
+        notify('Choose a model for this task before sending a message.', 'error')
+        setShowSettings(true)
+        return
+      }
+      if (!activeTab || isPrivate) {
+        notify('Agent mode requires a non-private tab.', 'error')
+        return
+      }
+
+      const request = buildRequest(trimmed, baseMessages)
+      if (!request) return
+
+      const assistantId = uid()
+      const userMessage: ChatMessage = { id: uid(), role: 'user', content: trimmed }
+      const assistantMessage: ChatMessage = {
+        id: assistantId,
+        role: 'assistant',
+        content: '',
+        streaming: false,
+        toolCalls: [],
+        toolResults: [],
+      }
+
+      setMessages([...baseMessages, userMessage, assistantMessage])
+      setInput('')
+      setLoading(true)
+      setAgentRunning(true)
+      setAgentSteps([])
+      setPendingToolCalls([])
+
+      try {
+        // The main process resolves the live webContents from the tab id.
+        const result = await window.electronAPI.ai.runAgent(request, {
+          tabId: activeTab.id,
+          windowId: (await window.electronAPI.window.getInfo?.())?.id || 0,
+        })
+
+        // Final response from agent
+        setMessages((current) =>
+          current.map((message) =>
+            message.id === assistantId
+              ? {
+                  ...message,
+                  content: result.choices?.[0]?.message?.content || 'Agent completed.',
+                  toolCalls: result.choices?.[0]?.message?.toolCalls || [],
+                  toolResults: result.choices?.[0]?.message?.toolResults || [],
+                }
+              : message
+          )
+        )
+      } catch (error) {
+        const message = errorText(error)
+        setMessages((current) =>
+          current.map((entry) =>
+            entry.id === assistantId
+              ? {
+                  ...entry,
+                  streaming: false,
+                  error: message,
+                  content: entry.content || `Agent error: ${message}`,
+                }
+              : entry
+          )
+        )
+        notify(`Agent failed: ${message}`, 'error')
+      } finally {
+        setLoading(false)
+        setAgentRunning(false)
+      }
+    },
+    [loading, currentModel, buildRequest, activeTab, isPrivate, notify]
+  )
+
+  // Agent: handle tool approval
+  const handleToolApproval = useCallback(
+    (toolCallId: string, approved: boolean) => {
+      const pending = pendingToolCalls.find((p) => p.toolCall.id === toolCallId)
+      if (pending) {
+        pending.resolve(approved)
+        setPendingToolCalls((prev) => prev.filter((p) => p.toolCall.id !== toolCallId))
+      }
+    },
+    [pendingToolCalls]
   )
 
   const savePrompt = useCallback(async () => {
@@ -457,7 +627,6 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       name: providerForm.name.trim() || TYPE_DEFAULTS[providerForm.type]?.name || providerForm.type,
       type: providerForm.type,
       baseUrl: providerForm.baseUrl.trim() || TYPE_DEFAULTS[providerForm.type]?.baseUrl,
-      apiKeyRef: `${id}-key`,
       enabled: true,
       models: [
         {
@@ -475,11 +644,12 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       defaultModel: modelId,
     }
     try {
-      await window.electronAPI.ai.addProvider(config, providerForm.apiKey.trim() || undefined)
+      const apiKey = providerForm.apiKey.trim()
+      await window.electronAPI.ai.addProvider(config, apiKey ? [apiKey] : undefined)
       await refreshAi()
       setProviderForm(EMPTY_PROVIDER_FORM)
       setShowProviderForm(false)
-      notify('Provider added. Assign it to a task slot below.', 'success')
+      notify('Provider added and ready to use.', 'success')
     } catch (error) {
       setSettingsError(`Could not add provider: ${errorText(error)}`)
     } finally {
@@ -546,6 +716,13 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           </div>
         </div>
         <div className="ai-header-actions">
+          <button
+            className={`icon-btn ${agentMode ? 'active' : ''}`}
+            onClick={() => setAgentMode((v) => !v)}
+            title={agentMode ? 'Disable agent mode (autonomous browsing)' : 'Enable agent mode (autonomous browsing)'}
+          >
+            <Icon name={agentMode ? 'bot' : 'bot'} size={15} />
+          </button>
           <button className="icon-btn" onClick={onOpenContext} title="Cross-tab context">
             <Icon name="panel" size={15} />
           </button>
@@ -562,8 +739,19 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         </div>
       </header>
 
+      {agentMode && agentTools.length > 0 && (
+        <div className="ai-agent-tools-bar" title="Available agent tools">
+          <span className="ai-agent-tools-label">Tools:</span>
+          {agentTools.map((tool) => (
+            <span key={tool.function.name} className="ai-agent-tool-chip" title={tool.function.description}>
+              {tool.function.name}
+            </span>
+          ))}
+        </div>
+      )}
+
       {showSettings && (
-        <div className="ai-settings">
+        <div className={`ai-settings ${showProviderForm ? 'expanded' : ''}`}>
           <div className="ai-settings-head">
             <strong>AI settings</strong>
             <button className="text-btn" onClick={onOpenSettings}>
@@ -635,7 +823,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                 + Add provider
               </button>
             ) : (
-              <div className="provider-form">
+              <div className="provider-form" ref={providerFormRef}>
                 <div className="provider-form-grid">
                   <label>
                     <span>Type</span>
@@ -775,6 +963,59 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         </span>
       </div>
 
+      {agentMode && agentRunning && agentSteps.length > 0 && (
+        <div className="ai-agent-steps">
+          <div className="ai-agent-steps-header">
+            <span className="ai-agent-steps-title">
+              <Icon name="bot" size={12} /> Agent working…
+            </span>
+          </div>
+          <div className="ai-agent-steps-list">
+            {agentSteps.map((step, index) => (
+              <div key={index} className={`ai-agent-step ${step.type}`}>
+                <span className="ai-agent-step-type">{step.type.toUpperCase()}</span>
+                <span className="ai-agent-step-content">{step.content}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {pendingToolCalls.length > 0 && (
+        <div className="ai-agent-approval">
+          <div className="ai-agent-approval-header">
+            <span className="ai-agent-approval-title">
+              <Icon name="alert-triangle" size={12} /> Tool requires approval
+            </span>
+          </div>
+          {pendingToolCalls.map((pending) => (
+            <div key={pending.toolCall.id} className="ai-agent-approval-item">
+              <div className="ai-agent-approval-preview">
+                <strong>{pending.toolCall.function.name}</strong>
+                <span>{pending.preview}</span>
+              </div>
+              <div className="ai-agent-approval-args">
+                {pending.toolCall.function.arguments}
+              </div>
+              <div className="ai-agent-approval-actions">
+                <button
+                  className="danger-btn small"
+                  onClick={() => handleToolApproval(pending.toolCall.id, false)}
+                >
+                  Deny
+                </button>
+                <button
+                  className="primary-btn small"
+                  onClick={() => handleToolApproval(pending.toolCall.id, true)}
+                >
+                  Allow
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       <div className="ai-messages" role="log" aria-live="polite">
         {messages.length === 0 && (
           <div className="ai-welcome">
@@ -863,14 +1104,19 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         <div className="ai-composer-row">
           <span className="ai-composer-hint">
             <kbd>Enter</kbd> send · <kbd>Shift</kbd> <kbd>Enter</kbd> newline
+            {agentMode && <span className="ai-agent-hint"> · Agent mode</span>}
           </span>
-          {loading ? (
+          {loading || agentRunning ? (
             <button className="danger-btn small" onClick={() => void stopGeneration()}>
-              <Icon name="stop" size={13} /> Stop
+              <Icon name="stop" size={13} /> {agentRunning ? 'Stop Agent' : 'Stop'}
             </button>
           ) : (
-            <button className="primary-btn small" disabled={!input.trim()} onClick={() => void sendMessage(input)}>
-              Send
+            <button
+              className="primary-btn small"
+              disabled={!input.trim()}
+              onClick={() => void (agentMode ? runAgent(input) : sendMessage(input))}
+            >
+              {agentMode ? 'Run Agent' : 'Send'}
             </button>
           )}
         </div>

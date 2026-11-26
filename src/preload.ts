@@ -12,6 +12,10 @@ const EVENT_CHANNELS = new Set([
   'settings-updated',
   'history-cleared',
   'ai:stream-chunk',
+  'ai:agent:step',
+  'ai:agent:tool-call',
+  'ai:agent:tool-result',
+  'memory-stats',
 ])
 
 function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
@@ -19,7 +23,13 @@ function invoke<T = unknown>(channel: string, ...args: unknown[]): Promise<T> {
 }
 
 function on(channel: string, callback: (...args: any[]) => void): () => void {
-  if (!EVENT_CHANNELS.has(channel)) throw new Error(`Unknown event channel: ${channel}`)
+  // Unknown channels are refused, but never crash the renderer over a
+  // subscription: a missing event should degrade to "no updates", not a
+  // blank window.
+  if (!EVENT_CHANNELS.has(channel)) {
+    console.warn(`Refused unknown event channel: ${channel}`)
+    return () => undefined
+  }
   const subscription = (_event: unknown, ...args: any[]) => callback(...args)
   ipcRenderer.on(channel, subscription)
   return () => ipcRenderer.removeListener(channel, subscription)
@@ -144,6 +154,21 @@ const ai = {
   contextIngest: (tabId: string) => invoke<void>('ai:context:ingest', tabId),
   getUsage: (providerId?: string, since?: number) => invoke<any[]>('ai:usage', providerId, since),
   getTotalUsage: (since?: number) => invoke<any>('ai:usage-total', since),
+  // Agent
+  getAgentTools: () => invoke<any[]>('ai:agent:tools'),
+  runAgent: (request: any, context: any) => invoke<any>('ai:agent:run', request, context),
+  approveTool: (toolCallId: string, approved: boolean) => invoke<any>('ai:agent:approve', toolCallId, approved),
+  onAgentStep: (callback: (step: any) => void) => on('ai:agent:step', callback),
+  onAgentToolCall: (callback: (payload: { toolCall: any; preview: string; requiresApproval: boolean }) => void) => on('ai:agent:tool-call', callback),
+}
+
+const memory = {
+  getConfig: () => invoke<any>('memory:config:get'),
+  setConfig: (patch: any) => invoke<any>('memory:config:set', patch),
+  check: () => invoke<any>('memory:check'),
+  getDiscardedTabs: () => invoke<any[]>('memory:discarded-tabs'),
+  isTabDiscarded: (tabId: string) => invoke<boolean>('tab:is-discarded', tabId),
+  onStats: (callback: (stats: any) => void) => on('memory-stats', callback),
 }
 
 const context = {
@@ -180,6 +205,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   permissions,
   window: windowApi,
   ai,
+  memory,
   context,
   app: appApi,
 

@@ -68,11 +68,22 @@ const WebviewPane = React.memo(function WebviewPane({
   partition,
   active,
   register,
+  isNewTabPage,
+  ntpProps,
 }: {
   tab: TabDTO
   partition: string
   active: boolean
   register: (id: string, element: WebviewElement | null) => void
+  isNewTabPage: boolean
+  ntpProps?: {
+    onSubmit: (raw: string) => void
+    onNavigate: (url: string) => void
+    topSites: Array<{ url: string; title: string; favicon?: string; visitCount: number }>
+    recentlyClosed: Array<{ id: string; url: string; title: string }>
+    searchEngineName: string
+    isPrivate: boolean
+  }
 }) {
   const [src, setSrc] = useState<string | null>(() => (isNewTab(tab.url) ? null : tab.url))
 
@@ -112,6 +123,14 @@ const WebviewPane = React.memo(function WebviewPane({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [tab.id]
   )
+
+  if (isNewTabPage && active && ntpProps) {
+    return (
+      <div className="tab-view active" aria-hidden={false}>
+        <NewTabPage {...ntpProps} />
+      </div>
+    )
+  }
 
   return (
     <div className={`tab-view ${active ? 'active' : ''}`} aria-hidden={!active}>
@@ -160,7 +179,8 @@ export default function App() {
   const [loadError, setLoadError] = useState<{ tabId: string; url: string; errorDescription: string } | null>(null)
   const [tabMenu, setTabMenu] = useState<{ id: string; x: number; y: number } | null>(null)
   const [permission, setPermission] = useState<{ id: string; origin: string; permission: string } | null>(null)
-  const [toast, setToast] = useState<{ text: string; kind: 'info' | 'error' | 'success' } | null>(null)
+  const [toast, setToast] = useState<{ text: string; kind: 'info' | 'error' | 'success' | 'warning' } | null>(null)
+  const [memoryStats, setMemoryStats] = useState<{ totalMB: number; budgetMB: number; heapUsedMB: number } | null>(null)
 
   const webviews = useRef<Record<string, WebviewElement | null>>({})
   const activeIdRef = useRef<string | null>(null)
@@ -173,7 +193,7 @@ export default function App() {
   const activeTab = tabs.find((tab) => tab.id === activeId) || null
   const activeEngine = getSearchEngine(settings.defaultSearchEngine)
 
-  const notify = useCallback((text: string, kind: 'info' | 'error' | 'success' = 'info') => {
+  const notify = useCallback((text: string, kind: 'info' | 'error' | 'success' | 'warning' = 'info') => {
     setToast({ text, kind })
   }, [])
 
@@ -281,7 +301,8 @@ export default function App() {
         setPermission(request)
       }),
       window.electronAPI.on('shortcut', (action: string) => shortcutRef.current(action)),
-    ]
+      window.electronAPI.memory?.onStats?.((stats: any) => setMemoryStats(stats)),
+    ].filter((unsubscribe): unsubscribe is () => void => typeof unsubscribe === 'function')
     return () => unsubscribers.forEach((unsubscribe) => unsubscribe())
   }, [])
 
@@ -1089,27 +1110,27 @@ export default function App() {
         <div className="workspace">
           <div className="view-stack">
             {windowInfo &&
-              tabs.map((tab) => (
-                <WebviewPane
-                  key={tab.id}
-                  tab={tab}
-                  partition={windowInfo.partition}
-                  active={tab.id === activeId}
-                  register={registerWebview}
-                />
-              ))}
-            {activeTab && isNewTab(activeTab.url) && (
-              <div className="ntp-layer">
-                <NewTabPage
-                  onSubmit={navigate}
-                  onNavigate={navigate}
-                  topSites={topSites}
-                  recentlyClosed={closedTabs}
-                  searchEngineName={activeEngine.name}
-                  isPrivate={isPrivate}
-                />
-              </div>
-            )}
+              tabs.map((tab, index) => {
+                const isActive = activeId ? tab.id === activeId : index === 0
+                return (
+                  <WebviewPane
+                    key={tab.id}
+                    tab={tab}
+                    partition={windowInfo.partition}
+                    active={isActive}
+                    register={registerWebview}
+                    isNewTabPage={isNewTab(tab.url)}
+                    ntpProps={isActive && isNewTab(tab.url) ? {
+                      onSubmit: navigate,
+                      onNavigate: navigate,
+                      topSites,
+                      recentlyClosed: closedTabs,
+                      searchEngineName: activeEngine.name,
+                      isPrivate,
+                    } : undefined}
+                  />
+                )
+              })}
             {!activeTab && (
               <div className="empty-workspace">
                 <p>No tabs are open.</p>
@@ -1166,6 +1187,11 @@ export default function App() {
             <button className="status-meta status-button" onClick={() => setDownloadsOpen(true)}>
               <Icon name="download" size={11} /> {activeDownloadCount} downloading
             </button>
+          )}
+          {memoryStats && (
+            <span className={`status-meta memory ${memoryStats.totalMB > memoryStats.budgetMB * 0.9 ? 'warn' : ''}`}>
+              <Icon name="shield" size={11} /> {memoryStats.totalMB} MB
+            </span>
           )}
           <span className="status-meta">{activeEngine.name}</span>
         </footer>
@@ -1301,8 +1327,43 @@ export default function App() {
   )
 }
 
+class RootErrorBoundary extends React.Component<
+  { children: React.ReactNode },
+  { error: Error | null }
+> {
+  state: { error: Error | null } = { error: null }
+
+  static getDerivedStateFromError(error: Error): { error: Error } {
+    return { error }
+  }
+
+  componentDidCatch(error: Error, info: React.ErrorInfo): void {
+    console.error('Ariadne UI crashed', error, info)
+  }
+
+  render(): React.ReactNode {
+    if (this.state.error) {
+      return (
+        <div className="boot-screen">
+          <div className="boot-card" role="alert">
+            <h1>Ariadne hit an error</h1>
+            <p>The interface could not start. This is a bug, not something you did.</p>
+            <pre className="boot-error">{this.state.error.message}</pre>
+            <button className="primary-btn" onClick={() => window.location.reload()}>
+              Reload interface
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
-    <App />
+    <RootErrorBoundary>
+      <App />
+    </RootErrorBoundary>
   </React.StrictMode>
 )

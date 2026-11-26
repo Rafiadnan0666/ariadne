@@ -31,6 +31,8 @@ export type IconName =
   | 'chevron'
   | 'check'
   | 'alert'
+  | 'bot'
+  | 'alert-triangle'
 
 const PATHS: Record<IconName, React.ReactNode> = {
   back: <polyline points="15 18 9 12 15 6" />,
@@ -186,6 +188,23 @@ const PATHS: Record<IconName, React.ReactNode> = {
   chevron: <polyline points="6 9 12 15 18 9" />,
   check: <polyline points="4 12 9 17 20 6" />,
   alert: (
+    <>
+      <path d="M12 3 22 20H2L12 3Z" />
+      <line x1="12" y1="9" x2="12" y2="14" />
+      <circle cx="12" cy="17" r="0.6" fill="currentColor" stroke="none" />
+    </>
+  ),
+  bot: (
+    <>
+      <rect x="3" y="3" width="18" height="18" rx="2" />
+      <circle cx="8" cy="9" r="1.5" />
+      <circle cx="16" cy="9" r="1.5" />
+      <path d="M5 15h14" />
+      <path d="M8 15v-2" />
+      <path d="M16 15v-2" />
+    </>
+  ),
+  'alert-triangle': (
     <>
       <path d="M12 3 22 20H2L12 3Z" />
       <line x1="12" y1="9" x2="12" y2="14" />

@@ -25,14 +25,30 @@ An AI-native desktop browser built with Electron, React, and TypeScript. Browser
 - Streaming chat in sidebar with stop button
 - Cross-tab intelligence: page extraction, BM25 retrieval, Q&A with citations
 - 27 passing tests for context pipeline
+- **AI Agent runtime**: 10 browser automation tools (navigate, search, click, type, scroll, find, highlight, extract, screenshot, wait), agent loop with tool approval UI
+- **Security hardening**: CSP headers, navigation restrictions, IPC sender validation, permission prompts
+- **Performance**: Tab discarding at memory budget (1.5GB default), lazy restore, memory stats in status bar
+- **Packaging**: Windows NSIS installer with custom icon
 
-**In Progress / Planned:**
-- AI Agent: autonomous browsing (navigate, search, click, type, scroll, find, highlight)
-- Search results page (internal, aggregated from multiple engines with AI summary)
+**Planned:**
 - True per-tab webviews (currently single webview with src swapping)
-- Application menu with accelerators
-- CSP enforcement, IPC sender validation
-- Tab discarding / memory budget
+- Search results page (internal, aggregated from multiple engines with AI summary)
+
+## Screenshots
+
+| New Tab Page | AI Sidebar | AI Settings | Add Provider Form |
+|:------------:|:----------:|:-----------:|:-----------------:|
+| ![New Tab](docs/screenshots/01-new-tab.png) | ![AI Sidebar](docs/screenshots/02-ai-sidebar.png) | ![AI Settings](docs/screenshots/03-ai-settings.png) | ![Add Provider](docs/screenshots/04-add-provider-form.png) |
+
+| Provider Form Filled | Provider Added | Settings | Appearance Settings | Web Page Loaded |
+|:--------------------:|:--------------:|:--------:|:-------------------:|:---------------:|
+| ![Filled Form](docs/screenshots/05-provider-form-filled.png) | ![Added](docs/screenshots/06-provider-added.png) | ![Settings](docs/screenshots/07-settings.png) | ![Appearance](docs/screenshots/08-appearance-settings.png) | ![Web Page](docs/screenshots/09-web-page.png) |
+
+## Demo
+
+![Demo](docs/demo.gif)
+
+[Watch full demo video (MP4)](docs/demo.mp4)
 
 ## Quick Start
 
@@ -114,11 +130,9 @@ Built-in search engines (configurable in Settings → Search):
 
 **Keyword search:** Type `g query` or `d query` in address bar to search with that engine.
 
-**Search Results Page (planned):** Internal aggregated results page with AI summaries, source tabs, and "AI Summary" button.
+## AI Agent
 
-## AI Agent (Planned)
-
-The AI Agent will allow the AI to autonomously browse:
+The AI Agent allows the AI to autonomously browse:
 
 | Capability | Description |
 |------------|-------------|
@@ -131,12 +145,15 @@ The AI Agent will allow the AI to autonomously browse:
 | **Highlight** | Mark text, images, elements visually (colored overlays) |
 | **Extract** | Read page content, tables, structured data |
 | **Screenshot** | Capture viewport or element |
+| **Wait** | Wait for navigation, elements, conditions |
 
 Tools exposed via function calling to the AI model. The agent can:
 - "Search for X and open the first result"
 - "Find all mentions of Y on this page and highlight them"
 - "Navigate to Z, fill the form, and submit"
 - "Compare prices across these 3 sites"
+
+Each tool call shows a preview with "Approve" / "Deny" so the user stays in control.
 
 ## Project Structure
 
@@ -145,31 +162,34 @@ src/
 ├── main/                    # Electron main process
 │   ├── index.ts             # App entry, IPC handlers, window management
 │   ├── tabs.ts              # Tab state + SQLite history
-│   └── ai/                  # AI system
-│       ├── index.ts         # AISystem facade
-│       ├── registry.ts      # ProviderRegistry: multi-key, auto-fallback, retry logic
-│       ├── credentials.ts   # keytar secure storage
-│       ├── provider.ts      # ProviderAdapter + BaseProvider (key rotation)
-│       ├── types.ts         # Shared AI types
-│       ├── providers/       # 5 provider implementations
-│       │   ├── openai.ts
-│       │   ├── anthropic.ts
-│       │   ├── ninerouter.ts
-│       │   ├── lmstudio.ts
-│       │   └── custom.ts
-│       └── context/         # Cross-tab intelligence
-│           ├── PageExtractor.ts
-│           ├── extraction-script.js
-│           ├── EmbeddingStore.ts
-│           ├── SessionContext.ts
-│           ├── chunking.ts
-│           ├── dedupe.ts
-│           ├── extraction.ts
-│           ├── manager.ts
-│           ├── ranking.ts
-│           ├── qa.ts
-│           ├── types.ts
-│           └── provider-adapter.ts
+│   ├── profile.ts           # Isolated profile support
+│   ├── capture.ts           # Automated screenshot/demo capture
+│   ├── ai/                  # AI system
+│   │   ├── index.ts         # AISystem facade
+│   │   ├── registry.ts      # ProviderRegistry: multi-key, auto-fallback, retry logic
+│   │   ├── credentials.ts   # keytar secure storage
+│   │   ├── provider.ts      # ProviderAdapter + BaseProvider (key rotation)
+│   │   ├── types.ts         # Shared AI types
+│   │   ├── agent-tools.ts   # 10 browser automation tools + approval UI
+│   │   ├── providers/       # 5 provider implementations
+│   │   │   ├── openai.ts
+│   │   │   ├── anthropic.ts
+│   │   │   ├── ninerouter.ts
+│   │   │   ├── lmstudio.ts
+│   │   │   └── custom.ts
+│   │   └── context/         # Cross-tab intelligence
+│   │       ├── PageExtractor.ts
+│   │       ├── extraction-script.js
+│   │       ├── EmbeddingStore.ts
+│   │       ├── SessionContext.ts
+│   │       ├── chunking.ts
+│   │       ├── dedupe.ts
+│   │       ├── extraction.ts
+│   │       ├── manager.ts
+│   │       ├── ranking.ts
+│   │       ├── qa.ts
+│   │       ├── types.ts
+│   │       └── provider-adapter.ts
 ├── preload.ts               # contextBridge IPC surface
 ├── shared/                  # Shared utilities
 │   └── search-engines.ts    # Search engine registry + navigation resolution
@@ -186,7 +206,7 @@ src/
         ├── NewTabPage.tsx
         ├── SearchResultsPage.tsx  # Aggregated search + AI summary
         └── ai/
-            └── ChatSidebar.tsx    # Streaming chat, model slots, context preview
+            └── ChatSidebar.tsx    # Streaming chat, model slots, context preview, agent tools
 ```
 
 ## Scripts
@@ -210,7 +230,7 @@ src/
 - **AI runs in main process only** — renderer never sees API keys
 - **Extraction script** injected via `executeJavaScript` into webContents
 - **Settings** via `electron-store` (settings, bookmarks, downloads)
-- **AI config** in `ai-providers.json` (providers, model slots, usage)
+- **AI config** in `ai-providers.json` (providers, model slots, usage, API key refs)
 
 ## Configuration
 

@@ -15,7 +15,7 @@
 | **3** | UI, styling, animation | **Partial** | Dark theme, tab strip, sidebar, animations, NTP, bookmarks bar; missing: design tokens, light/system themes, accent color, density, virtualized lists |
 | **4** | Multi-provider AI system | **Partial** | Provider abstraction, 5 providers, keytar, model slots, streaming, usage tracking; missing: OpenAI/Anthropic/LM Studio implementations (stubs), health checks, fallback UI, lazy init |
 | **5** | Cross-tab intelligence | **Partial** | Extraction pipeline, embedding store, session context, retrieval, Q&A with citations; missing: screenshots, context picker UI, per-site exclusions UI, dedup UI |
-| **6** | Agent runtime | **Not started** | Planner/executor/verifier, tools, approvals, sandboxing, activity log — all missing |
+| **6** | Agent runtime | **In Progress** | Function calling tools (navigate, search, click, type, scroll, find, highlight, extract, screenshot, wait), agent loop (plan → execute → observe → repeat), approval UI, WebContents automation — core implemented |
 | **7** | Security hardening | **Not started** | CSP, contextIsolation, sandbox, keytar — partially done; threat model, pen testing, audit — missing |
 | **8** | Performance & efficiency | **Not started** | Tab discarding, memory budget, lazy restore, benchmarks — missing |
 | **9** | Testing, packaging, docs | **Partial** | Unit tests (27 pass), build works, app launches; missing: E2E tests, manual run-throughs, electron-builder package, docs sync, v0.1.0 tag |
@@ -67,6 +67,32 @@
 - ✅ Q&A pipeline: preview → confirm → answer with citations
 - ✅ Private browsing exclusion, dedup, bounds, compression
 - ✅ **27 unit tests pass** (extraction, dedupe, chunking, ranking, QA, manager)
+
+### Agent Runtime (Milestone 6)
+- ✅ Function calling tool definitions (10 tools): `navigate`, `search`, `click`, `type`, `scroll`, `find`, `highlight`, `extract`, `screenshot`, `wait`
+- ✅ Browser automation via `webContents.executeJavaScript` + `capturePage`
+- ✅ Agent loop: plan → execute → observe → repeat (configurable max steps)
+- ✅ Tool approval UI with preview and allow/deny buttons
+- ✅ Agent steps display: planning, executing, observing phases
+- ✅ Tool chips showing available tools in sidebar header
+- ✅ Full conversation context preserved across tool calls
+- ✅ IPC handlers for tool execution, agent run, step updates, tool approval
+- ✅ Integration with existing provider fallback/key rotation system
+
+### Security (Milestone 7)
+- ✅ Content Security Policy on all renderer pages with strict directives
+- ✅ Security headers: X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, Permissions-Policy
+- ✅ Navigation restrictions: windowOpenHandler deny, will-navigate guard for non-file URLs
+- ✅ Webview hardening: sandbox, contextIsolation, nodeIntegration disabled, webSecurity enabled
+- ✅ IPC sender validation: trusted frame check (file:// + index.html only)
+- ✅ Permission prompts UI for media/geolocation/etc. with remember option
+
+### Performance (Milestone 8)
+- ✅ Tab discarding: auto-suspend inactive tabs when memory budget exceeded (configurable)
+- ✅ Memory budget: 1.5GB default, 80% threshold triggers discard, min 2 active tabs preserved
+- ✅ Lazy restore: discarded tabs restore on activation, preserving URL/title/order
+- ✅ Memory stats in status bar: real-time heap/total/budget display with warning color
+- ✅ Configurable budget via Settings (IPC: memory:config:get/set, memory:check, memory:discarded-tabs)
 
 ---
 
@@ -148,31 +174,32 @@
 ### Milestone 6 — Agent Runtime
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Planner / Executor / Verifier | ❌ | Not implemented |
-| Browser tools (navigate, click, type, extract) | ❌ | Not implemented |
-| Explicit approval for sensitive actions | ❌ | Not implemented |
-| Prompt injection defense | ❌ | Not implemented |
-| Activity log + stop button + budgets | ❌ | Not implemented |
-| Sandboxed tool access | ❌ | Not implemented |
+| Planner / Executor / Verifier | ⚠️ | Agent loop (plan→execute→observe) implemented; separate verifier agent not yet |
+| Browser tools (navigate, click, type, extract, search, scroll, find, highlight, screenshot, wait) | ✅ | 10 tools implemented with WebContents automation |
+| Explicit approval for sensitive actions | ✅ | Tool approval UI with preview, allow/deny per tool call |
+| Prompt injection defense | ❌ | Not implemented (needs input sanitization, tool result validation) |
+| Activity log + stop button + budgets | ⚠️ | Stop button works, agent steps shown; token budget tracking per step missing |
+| Sandboxed tool access | ⚠️ | Tools execute in renderer context via preload; full sandboxing not yet |
+| Multi-key provider fallback with context preserved | ✅ | Integrated with existing provider fallback system |
 
 ### Milestone 7 — Security
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Strict CSP on app UI | ❌ | Not implemented |
-| Minimal preload API surface | ⚠️ | Large surface exposed |
-| Navigation/new-window restrictions | ⚠️ | Basic deny only |
-| Safe protocol handling | ❌ | Not implemented |
+| Strict CSP on app UI | ✅ | CSP headers + security headers (X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, Permissions-Policy) |
+| Minimal preload API surface | ⚠️ | Large surface exposed (still needs reduction) |
+| Navigation/new-window restrictions | ✅ | windowOpenHandler deny, will-navigate guard, webview restrictions |
+| Safe protocol handling | ⚠️ | Only http/https/file allowed for navigation |
 | Threat model doc | ❌ | Not written |
 | Pen testing (hostile page IPC, key theft, injection, leakage) | ❌ | Not done |
-| `npm audit` + dep cleanup | ❌ | Not done |
+| `npm audit` + dep cleanup | ✅ | Fixed 19 vulnerabilities via electron-builder@26.18.0 + sqlite3@6.0.1 (6 moderate remain in transitive deps) |
 
 ### Milestone 8 — Performance
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Tab sleeping/discarding | ❌ | Not implemented |
-| Memory budget | ❌ | Not implemented |
-| Lazy restored tabs | ❌ | Not implemented |
-| No idle polling/timers | ⚠️ | Need audit |
+| Tab sleeping/discarding | ✅ | Auto-discard inactive tabs at memory threshold, lazy restore on activation |
+| Memory budget | ✅ | Configurable budget (default 1.5GB), threshold-based discard, memory stats broadcast |
+| Lazy restored tabs | ✅ | Discarded tabs restore on click, preserve URL/title/order |
+| No idle polling/timers | ⚠️ | Memory monitor uses setInterval (30s), need audit |
 | Bounded caches | ✅ | Context manager has bounds |
 | Streaming everywhere | ✅ | AI streaming works |
 | Benchmarks (cold start, idle 1/10/30 tabs, AI open/closed, extraction, animation, long session) | ❌ | Not done |
@@ -180,10 +207,10 @@
 ### Milestone 9 — Testing/Packaging
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Automated critical path tests | ⚠️ | Unit tests only |
-| Manual run-through (search, iframe site, login persist, download, popup, 20+ tabs, cross-tab, agent) | ❌ | Not done |
+| Automated critical path tests | ⚠️ | Unit tests only (27 pass) |
+| Manual run-through (search, iframe site, login persist, download, popup, 20+ tabs, cross-tab, agent) | ⚠️ | Partial - core features verified, agent needs testing |
 | Clean build from fresh clone | ✅ | Works |
-| electron-builder Windows installer | ❌ | Config exists, not tested |
+| electron-builder Windows installer | ✅ | Packaged successfully (NSIS config, custom icon, keytar rebuilt) |
 | README/ARCHITECTURE/THREAT-MODEL/user guide sync | ❌ | Out of date |
 | v0.1.0 tag | ❌ | Not ready |
 

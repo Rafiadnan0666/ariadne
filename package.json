@@ -1,6 +1,8 @@
 {
   "name": "ariadne-browser",
-  "version": "1.0.0",
+  "version": "0.2.0",
+  "description": "AI-native desktop browser with cross-tab intelligence and autonomous agent runtime",
+  "author": "Ariadne Team",
   "main": "dist/main/index.js",
   "type": "commonjs",
   "scripts": {
@@ -23,7 +25,6 @@
     "openai": "^7.62.0",
     "react-dnd": "^16.0.1",
     "react-dnd-html5-backend": "^16.0.1",
-    "sqlite3": "^5.1.6",
     "tiktoken": "^1.0.22",
     "uuid": "^14.0.3"
   },
@@ -35,7 +36,7 @@
     "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.20",
     "electron": "^45.4.1",
-    "electron-builder": "^25.1.8",
+    "electron-builder": "^26.18.0",
     "eslint": "^9.17.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^15.14.0",
@@ -43,6 +44,8 @@
     "prettier": "^3.4.2",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
+    "sharp": "^0.35.5",
+    "sqlite3": "^6.0.1",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.74.0",
@@ -59,7 +62,7 @@
       "target": [
         "nsis"
       ],
-      "icon": "build/icon.ico"
+      "icon": "build/icon.png"
     },
     "nsis": {
       "oneClick": false,

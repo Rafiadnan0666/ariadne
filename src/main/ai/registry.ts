@@ -11,13 +11,17 @@ import {
   TokenUsage,
   ModelCapability,
   RequestMetadata,
+  ToolDefinition,
+  ChatMessage,
+  ToolCall,
 } from './types';
 import { ProviderAdapter, StreamCallback, BaseProvider } from './provider';
 import { createProvider, PROVIDER_TYPES, getDefaultConfig } from './providers';
 import { storeCredential, getCredential, deleteCredential, listCredentials, maskApiKey } from './credentials';
 import * as path from 'path';
 import * as fs from 'fs';
-import { app } from 'electron';
+import { app, BrowserWindow, webContents } from 'electron';
+import { AGENT_TOOLS, executeAgentTool, AgentToolContext } from './agent-tools';
 
 const REGISTRY_FILE = 'ai-providers.json';
 const USAGE_FILE = 'ai-usage.json';
@@ -29,6 +33,7 @@ interface ActiveRequestContext {
   originalModelId: string;
   attemptCount: number;
   startTime: number;
+  toolContext?: AgentToolContext;
 }
 
 export class ProviderRegistry {
@@ -192,6 +197,18 @@ export class ProviderRegistry {
     this.configs.delete(id);
     this.healthCache.delete(id);
     this.keyRotationIndex.delete(id);
+
+    // Drop task slots that pointed at the removed provider's models, so the
+    // sidebar does not keep advertising a model that no longer exists.
+    if (config) {
+      const removedModels = new Set(config.models?.map((model) => model.id) ?? []);
+      for (const slot of Object.keys(this.modelSlots) as ModelSlot[]) {
+        if (this.modelSlots[slot] && removedModels.has(this.modelSlots[slot])) {
+          this.modelSlots[slot] = '';
+        }
+      }
+    }
+
     await this.saveConfigs();
   }
 
@@ -277,13 +294,15 @@ export class ProviderRegistry {
       testConfig.apiKeyRef = 'temp';
     }
     const provider = createProvider(testConfig);
-    await provider.initialize();
-    const health = await provider.healthCheck();
-    await provider.shutdown();
-    if (apiKey) {
-      await deleteCredential('__test__', 'temp');
+    try {
+      await provider.initialize();
+      return await provider.healthCheck();
+    } finally {
+      await provider.shutdown();
+      if (apiKey) {
+        await deleteCredential('__test__', 'temp').catch(() => undefined);
+      }
     }
-    return health;
   }
 
   private async startProvider(config: ProviderConfig): Promise<void> {
@@ -534,6 +553,143 @@ export class ProviderRegistry {
     for (const provider of this.providers.values()) {
       provider.cancelActiveRequest?.();
     }
+  }
+
+  /** Execute a tool call and return the result */
+  async executeToolCall(
+    toolCall: ToolCall,
+    context: AgentToolContext
+  ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    try {
+      const args = JSON.parse(toolCall.function.arguments);
+      const result = await executeAgentTool(toolCall.function.name, args, context);
+      return { success: result.success, result: result.result, error: result.error };
+    } catch (error) {
+      return { success: false, error: String(error) };
+    }
+  }
+
+  /** Run agent loop: plan → execute → observe → repeat */
+  async runAgentLoop(
+    request: ChatCompletionRequest,
+    context: AgentToolContext,
+    onToolCall: (toolCall: ToolCall, result: { success: boolean; result?: unknown; error?: string }) => void,
+    onStep: (step: { type: 'plan' | 'execute' | 'observe'; content: string }) => void,
+    maxSteps: number = 10
+  ): Promise<ChatCompletionResponse> {
+    const modelId = request.model;
+    const result = await this.getModelById(modelId);
+    if (!result) throw new Error(`Model ${modelId} not found or provider not enabled`);
+
+    const { provider, model } = result;
+    const startTime = Date.now();
+    let accumulatedUsage: TokenUsage | undefined;
+    let messages = [...request.messages];
+    let steps = 0;
+
+    // Add system prompt for agent
+    const agentSystemPrompt: ChatMessage = {
+      role: 'system',
+      content: `You are an AI browser agent. You can use tools to interact with web pages.
+Available tools: ${AGENT_TOOLS.map(t => t.function.name).join(', ')}
+When using tools, explain your reasoning. Be concise.
+If a tool requires approval, wait for user confirmation before proceeding.`
+    };
+    
+    if (!messages.some(m => m.role === 'system')) {
+      messages.unshift(agentSystemPrompt);
+    } else {
+      messages[0] = { ...messages[0], content: messages[0].content + '\n\n' + agentSystemPrompt.content };
+    }
+
+    while (steps < maxSteps) {
+      steps++;
+      
+      // Get model response with tools
+      const agentRequest: ChatCompletionRequest = {
+        ...request,
+        model: modelId,
+        messages,
+        tools: AGENT_TOOLS,
+        toolChoice: 'auto',
+      };
+
+      onStep({ type: 'plan', content: `Step ${steps}: Thinking...` });
+
+      let response: ChatCompletionResponse;
+      try {
+        response = await this.executeWithRetry(provider, agentRequest, provider.config, model, startTime);
+      } catch (error) {
+        return this.handleErrorAndFallback(error, agentRequest, modelId, startTime);
+      }
+
+      const choice = response.choices[0];
+      const message = choice.message;
+      messages.push(message);
+
+      if (message.toolCalls && message.toolCalls.length > 0) {
+        // Execute tool calls
+        for (const toolCall of message.toolCalls) {
+          onStep({ type: 'execute', content: `Executing: ${toolCall.function.name}(${toolCall.function.arguments})` });
+          
+          const toolResult = await this.executeToolCall(toolCall, context);
+          onToolCall(toolCall, toolResult);
+          
+          // Add tool result to conversation
+          messages.push({
+            role: 'tool',
+            toolCallId: toolCall.id,
+            content: toolResult.success 
+              ? JSON.stringify(toolResult.result) 
+              : `Error: ${toolResult.error}`,
+          });
+          
+          onStep({ type: 'observe', content: toolResult.success 
+            ? `Result: ${JSON.stringify(toolResult.result).slice(0, 200)}` 
+            : `Error: ${toolResult.error}` });
+        }
+        // Continue loop for next action
+        continue;
+      }
+
+      // No tool calls, we're done
+      if (accumulatedUsage === undefined && response.usage) {
+        accumulatedUsage = response.usage;
+      } else if (response.usage) {
+        accumulatedUsage = {
+          promptTokens: accumulatedUsage!.promptTokens + response.usage.promptTokens,
+          completionTokens: accumulatedUsage!.completionTokens + response.usage.completionTokens,
+          totalTokens: accumulatedUsage!.totalTokens + response.usage.totalTokens,
+        };
+      }
+
+      if (accumulatedUsage) {
+        this.recordUsage(provider.config.id, modelId, accumulatedUsage, model, Date.now() - startTime);
+      }
+
+      return {
+        id: response.id,
+        model: modelId,
+        choices: [{ index: 0, message, finishReason: choice.finishReason }],
+        usage: accumulatedUsage,
+      };
+    }
+
+    // Max steps reached
+    return {
+      id: `agent-${Date.now()}`,
+      model: modelId,
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: 'Max steps reached. Agent stopped.' },
+        finishReason: 'stop',
+      }],
+      usage: accumulatedUsage,
+    };
+  }
+
+  getAgentTools(): ToolDefinition[] {
+    return AGENT_TOOLS;
   }
 
   private async handleErrorAndFallback(

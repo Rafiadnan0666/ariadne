@@ -52,9 +52,14 @@ export abstract class BaseProvider implements ProviderAdapter {
       const key = await getCredential(this.config.id, keyRef);
       if (key) this.apiKeys.push(key);
     }
-    if (this.apiKeys.length === 0 && keyRefs.length > 0) {
+    if (this.apiKeys.length === 0 && this.requiresApiKey()) {
       throw new Error(`No API keys found for provider ${this.config.id}`);
     }
+  }
+
+  /** Local or self-hosted providers can run without a key. */
+  protected requiresApiKey(): boolean {
+    return true;
   }
 
   getCurrentApiKey(): string | null {

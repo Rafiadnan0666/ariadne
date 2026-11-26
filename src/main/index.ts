@@ -1,3 +1,4 @@
+import './profile'
 import {
   app,
   BrowserWindow,
@@ -44,6 +45,7 @@ import {
   type TabState,
 } from './tabs'
 import { aiSystem } from './ai'
+import { registerAgentToolHandlers } from './ai/agent-tools'
 import { contextService } from './context/service'
 import { downloadManager, type DownloadRecord } from './downloads'
 import {
@@ -107,6 +109,155 @@ const tabContents = new Map<number, string>()
 const privatePartitions = new Set<string>()
 let quitting = false
 
+// Memory budget & tab discarding
+interface MemoryBudgetConfig {
+  enabled: boolean
+  maxMemoryMB: number
+  checkIntervalMs: number
+  discardThreshold: number // 0-1, fraction of budget before discarding
+  minActiveTabs: number // never discard if active tabs <= this
+}
+
+const DEFAULT_MEMORY_BUDGET: MemoryBudgetConfig = {
+  enabled: true,
+  maxMemoryMB: 1500, // 1.5GB budget
+  checkIntervalMs: 30_000,
+  discardThreshold: 0.8,
+  minActiveTabs: 2,
+}
+
+let memoryBudgetConfig: MemoryBudgetConfig = { ...DEFAULT_MEMORY_BUDGET }
+let memoryCheckTimer: NodeJS.Timeout | null = null
+const discardedTabs = new Map<string, { url: string; title: string; windowId: number; order: number }>()
+
+function getMemoryBudgetConfig(): MemoryBudgetConfig {
+  return memoryBudgetConfig
+}
+
+function setMemoryBudgetConfig(patch: Partial<MemoryBudgetConfig>): MemoryBudgetConfig {
+  memoryBudgetConfig = { ...memoryBudgetConfig, ...patch }
+  restartMemoryMonitor()
+  return memoryBudgetConfig
+}
+
+function restartMemoryMonitor(): void {
+  if (memoryCheckTimer) {
+    clearInterval(memoryCheckTimer)
+    memoryCheckTimer = null
+  }
+  if (!memoryBudgetConfig.enabled) return
+  memoryCheckTimer = setInterval(checkMemoryAndDiscard, memoryBudgetConfig.checkIntervalMs)
+  memoryCheckTimer.unref()
+}
+
+async function checkMemoryAndDiscard(): Promise<void> {
+  if (!memoryBudgetConfig.enabled) return
+
+  const usage = process.memoryUsage()
+  const heapUsedMB = Math.round(usage.heapUsed / 1024 / 1024)
+  const heapTotalMB = Math.round(usage.heapTotal / 1024 / 1024)
+  const externalMB = Math.round(usage.external / 1024 / 1024)
+  const totalMB = heapUsedMB + externalMB
+
+  if (totalMB >= memoryBudgetConfig.maxMemoryMB * memoryBudgetConfig.discardThreshold) {
+    await discardInactiveTabs()
+  }
+
+  // Broadcast memory stats to renderer for dev tools / debugging
+  broadcast('memory-stats', {
+    heapUsedMB,
+    heapTotalMB,
+    externalMB,
+    totalMB,
+    budgetMB: memoryBudgetConfig.maxMemoryMB,
+    threshold: memoryBudgetConfig.discardThreshold,
+  })
+}
+
+async function discardInactiveTabs(): Promise<void> {
+  // Get all tabs across all windows, sort by last active time (approximate via order)
+  const allTabs: Array<{ tab: TabState; windowState: WindowState }> = []
+  for (const windowState of windows.values()) {
+    const tabsList = getTabs(windowState.id)
+    for (const tab of tabsList) {
+      if (!tab.pinned && !tab.isPrivate && tab.url !== 'about:blank') {
+        allTabs.push({ tab, windowState })
+      }
+    }
+  }
+
+  // Sort by order (higher = older/less recently used)
+  allTabs.sort((a, b) => b.tab.order - a.tab.order)
+
+  let discarded = 0
+  const activeTabCount = allTabs.filter(t => t.tab.active).length
+
+  for (const { tab, windowState } of allTabs) {
+    if (activeTabCount - discarded <= memoryBudgetConfig.minActiveTabs) break
+    if (tab.active) continue // Never discard active tab
+    if (!tab.webContentsId || !tab.windowId) continue
+
+    const contents = webContents.fromId(tab.webContentsId)
+    if (!contents || contents.isDestroyed()) continue
+
+    try {
+      // Store discarded tab info for restoration
+      discardedTabs.set(tab.id, {
+        url: tab.url,
+        title: tab.title,
+        windowId: tab.windowId,
+        order: tab.order,
+      })
+
+      // Navigate to about:blank to free memory
+      await contents.loadURL('about:blank')
+      tab.url = 'about:blank'
+      tab.title = 'Discarded tab'
+      discarded++
+
+      // Notify renderer
+      sendTab(tab)
+
+      // Check if we've freed enough
+      const usage = process.memoryUsage()
+      const currentMB = Math.round((usage.heapUsed + usage.external) / 1024 / 1024)
+      if (currentMB < memoryBudgetConfig.maxMemoryMB * memoryBudgetConfig.discardThreshold) break
+    } catch {
+      // Ignore errors, try next tab
+    }
+  }
+
+  if (discarded > 0) {
+    broadcast('toast', { text: `Discarded ${discarded} inactive tabs to free memory`, kind: 'info' })
+  }
+}
+
+async function restoreDiscardedTab(tabId: string): Promise<boolean> {
+  const info = discardedTabs.get(tabId)
+  if (!info) return false
+
+  const tab = getTabById(tabId)
+  if (!tab || !tab.webContentsId) return false
+
+  const contents = webContents.fromId(tab.webContentsId)
+  if (!contents || contents.isDestroyed()) return false
+
+  try {
+    await contents.loadURL(info.url)
+    tab.url = info.url
+    tab.title = info.title
+    discardedTabs.delete(tabId)
+    sendTab(tab)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function isTabDiscarded(tabId: string): boolean {
+  return discardedTabs.has(tabId)
+}
+
 function getSettings(): AppSettings {
   const stored = settingsStore.get('settings')
   const merged = { ...DEFAULT_SETTINGS, ...(stored && typeof stored === 'object' ? stored : {}) } as AppSettings
@@ -161,6 +312,34 @@ function configureSession(ses: Session, isPrivate: boolean, partition: string): 
   configureSessionPermissions(ses, (windowId) => windows.get(windowId)?.isPrivate === true)
   downloadManager.attach(ses, isPrivate)
   applyDnt(ses, getSettings().doNotTrack)
+
+  // Content Security Policy
+  const csp = [
+    "default-src 'self' file: data: blob:;",
+    "script-src 'self' 'unsafe-inline' 'unsafe-eval' file: data:;",
+    "style-src 'self' 'unsafe-inline' data:;",
+    "img-src 'self' file: data: blob: https:;",
+    "font-src 'self' file: data:;",
+    "connect-src 'self' https: wss: ws: data:;",
+    "media-src 'self' file: data: blob: https:;",
+    "frame-src 'self' file: data: https: http:;",
+    "worker-src 'self' file: data: blob:;",
+    "object-src 'none';",
+    "base-uri 'self';",
+    "form-action 'self';",
+    "frame-ancestors 'none';",
+  ].join(' ')
+
+  ses.webRequest.onHeadersReceived((details, callback) => {
+    const responseHeaders = details.responseHeaders || {}
+    responseHeaders['Content-Security-Policy'] = [csp]
+    responseHeaders['X-Content-Type-Options'] = ['nosniff']
+    responseHeaders['X-Frame-Options'] = ['DENY']
+    responseHeaders['X-XSS-Protection'] = ['1; mode=block']
+    responseHeaders['Referrer-Policy'] = ['strict-origin-when-cross-origin']
+    responseHeaders['Permissions-Policy'] = ['accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()']
+    callback({ responseHeaders })
+  })
 }
 
 function serializeTab(tab: TabState): Record<string, unknown> {
@@ -412,6 +591,25 @@ function createBrowserWindow(options: { isPrivate?: boolean; url?: string } = {}
   const state: WindowState = { id: window.id, window, isPrivate, partition }
   windows.set(window.id, state)
 
+  // Renderer diagnostics: never fail silently to a black window.
+  window.webContents.on('console-message' as any, (...args: any[]) => {
+    const details = args[1] && typeof args[1] === 'object' ? args[1] : null
+    const level = details ? details.level : args[1]
+    const message = details ? details.message : args[2]
+    if (level === 'error' || level === 'warning' || level === 3 || level === 2) {
+      console.error(`[renderer:${level}] ${message}`)
+    }
+  })
+  window.webContents.on('preload-error' as any, (_event: any, preloadPath: string, error: Error) => {
+    console.error('[renderer] preload failed:', preloadPath, error)
+  })
+  window.webContents.on('render-process-gone' as any, (_event: any, details: unknown) => {
+    console.error('[renderer] process gone:', details)
+  })
+  window.webContents.on('did-fail-load' as any, (_event: any, code: number, description: string, url: string) => {
+    console.error('[renderer] load failed:', code, description, url)
+  })
+
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, url) => {
     if (!url.startsWith('file://')) event.preventDefault()
@@ -432,8 +630,13 @@ function createBrowserWindow(options: { isPrivate?: boolean; url?: string } = {}
   })
 
   window.once('ready-to-show', () => {
-    if (!window.isDestroyed()) window.show()
+    if (!window.isDestroyed()) {
+      window.show()
+      sendTabs(window.id)
+    }
   })
+
+  void createTab(options.url || 'about:blank', { windowId: window.id, isPrivate })
 
   window.on('closed', () => {
     denyPendingForWindow(window.id)
@@ -451,10 +654,6 @@ function createBrowserWindow(options: { isPrivate?: boolean; url?: string } = {}
       void ses.clearCache().catch(() => undefined)
       privatePartitions.delete(partition)
     }
-  })
-
-  void createTab(options.url || 'about:blank', { windowId: window.id, isPrivate }).then(() => {
-    if (!window.isDestroyed()) sendTabs(window.id)
   })
 
   void window.loadFile(path.join(__dirname, '../renderer/index.html'))
@@ -549,6 +748,10 @@ function registerIpc(): void {
 
   handle('tab:set-active', async (event, id: string) => {
     const state = ownerWindow(event)
+    // Restore discarded tab if needed
+    if (isTabDiscarded(id)) {
+      await restoreDiscardedTab(id)
+    }
     await setActiveTab(id, state.id)
     sendTabs(state.id)
   })
@@ -580,8 +783,22 @@ function registerIpc(): void {
     setTabWebContents(id, webContentsId)
     aiSystem.registerTab(id, webContentsId, tab.url, tab.title, tab.isPrivate === true)
     attachTabEvents(id, contents)
+
+    // The webview may finish navigating before its contents id reaches the
+    // main process, so events like did-navigate can fire before we attach.
+    // Sync the live state once at registration to cover that gap.
     const current = getTabById(id)
-    if (current) sendTab(current)
+    if (current) {
+      const liveTitle = contents.getTitle()
+      const liveUrl = contents.getURL()
+      if (liveTitle) current.title = liveTitle
+      if (liveUrl && liveUrl !== 'about:blank') current.url = liveUrl
+      current.loading = contents.isLoading()
+      current.canGoBack = contents.canGoBack()
+      current.canGoForward = contents.canGoForward()
+      aiSystem.updateTab(id, current.url, current.title)
+      sendTab(current)
+    }
   })
 
   const activeContents = (event: IpcMainInvokeEvent): Electron.WebContents | null => {
@@ -889,6 +1106,45 @@ function registerIpc(): void {
     })
   })
 
+  // Agent IPC ---------------------------------------------------------------
+  handle('ai:agent:tools', async () => aiSystem.getRegistry().getAgentTools())
+  
+  handle('ai:agent:run', async (event, request, context) => {
+    const winState = ownerWindow(event)
+    if (!winState) throw new Error('No window')
+    const tab = getTabs(winState.id).find(t => t.id === context.tabId)
+    if (!tab || !tab.webContentsId) throw new Error('Tab not found')
+    
+    const toolContext = { tabId: context.tabId, webContentsId: tab.webContentsId, window: winState.window }
+    
+    return aiSystem.getRegistry().runAgentLoop(
+      request,
+      toolContext,
+      (toolCall, result) => {
+        if (!winState.window.webContents.isDestroyed()) {
+          winState.window.webContents.send('ai:agent:tool-result', { toolCall, result })
+        }
+      },
+      (step) => {
+        if (!winState.window.webContents.isDestroyed()) {
+          winState.window.webContents.send('ai:agent:step', step)
+        }
+      }
+    )
+  })
+  
+  handle('ai:agent:approve', async (_event, toolCallId: string, approved: boolean) => {
+    // Tool approval handled in renderer - this is for tracking
+    return { success: true, toolCallId, approved }
+  })
+
+  // Memory budget & tab discarding ------------------------------------------
+  handle('memory:config:get', async () => getMemoryBudgetConfig())
+  handle('memory:config:set', async (_event, patch: Partial<MemoryBudgetConfig>) => setMemoryBudgetConfig(patch))
+  handle('memory:check', async () => checkMemoryAndDiscard())
+  handle('memory:discarded-tabs', async () => Array.from(discardedTabs.entries()).map(([id, info]) => ({ id, ...info })))
+  handle('tab:is-discarded', async (_event, tabId: string) => isTabDiscarded(tabId))
+
   handle('ai:extract-page', async (event, tabId: string) => {
     tabForEvent(event, tabId)
     return aiSystem.extractPage(tabId)
@@ -972,9 +1228,25 @@ if (!hasLock) {
     initPermissions()
     await initTabs()
     await aiSystem.getRegistry().initialize()
+    registerAgentToolHandlers()
     installApplicationMenu()
     registerIpc()
     createBrowserWindow()
+    restartMemoryMonitor()
+
+    const captureDir = process.env.ARIADNE_CAPTURE_DIR
+    const demoDir = process.env.ARIADNE_DEMO_DIR
+    const windowForCapture = () => {
+      const first = Array.from(windows.values())[0]
+      return first && !first.window.isDestroyed() ? first.window : undefined
+    }
+    if (demoDir) {
+      const { runDemo } = await import('./capture')
+      void runDemo(demoDir, windowForCapture)
+    } else if (captureDir) {
+      const { runCapture } = await import('./capture')
+      void runCapture(captureDir, windowForCapture)
+    }
   })
 
   app.on('activate', () => {
