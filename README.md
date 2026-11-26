@@ -1,48 +1,134 @@
 # Ariadne Browser
 
-An AI-native desktop browser built with Electron, React, and TypeScript. Browser first, AI second.
+An AI-native desktop browser built with Electron, React, and TypeScript. **Browser first, AI second.**
 
-## Current Status (v0.2.0)
+---
 
-**Working:**
-- Multi-tab browsing (horizontal tabs with drag-reorder, pin, mute, duplicate, middle-click close, reopen closed)
-- Address bar with URL entry + search detection, search suggestions from history/bookmarks/open tabs
-- Navigation: back, forward, reload, stop, home, view source (Ctrl+U)
-- Downloads panel with progress, pause/resume/cancel, open file/folder, retry, filter
-- Bookmarks bar with nested folders, manager with add/edit/delete/move, HTML import/export
-- History page with search, date groups, time filters, clear browsing data dialog
-- Settings: 7 sections (General, Appearance, Search engines, Privacy, Shortcuts, AI, About)
-- New Tab Page with search, top sites from history, recently closed tabs
-- Find in page (Ctrl+F), per-tab zoom (Ctrl+/-, Ctrl+0), fullscreen (F11), print (Ctrl+P)
-- Private window (separate session partition), 30+ global shortcuts
-- Status bar with loading/zoom/security indicators
-- Persistent sessions, SQLite history (1000 entries)
-- AI provider system: 5 providers (OpenAI, Anthropic, 9Router, LM Studio local, Custom)
-- **Multi-API key support per provider** — add multiple keys, automatic rotation on rate limit/auth errors
-- **Auto-fallback with context preservation** — when a provider fails, automatically retries with key rotation, then falls back to next provider while preserving conversation context
-- Secure credentials via OS keychain (keytar), never exposed to renderer
-- Model slot routing: 5 task slots (fastBrowsing, research, reasoning, coding, verification)
-- Streaming chat in sidebar with stop button
-- Cross-tab intelligence: page extraction, BM25 retrieval, Q&A with citations
-- 27 passing tests for context pipeline
-- **AI Agent runtime**: 10 browser automation tools (navigate, search, click, type, scroll, find, highlight, extract, screenshot, wait), agent loop with tool approval UI
-- **Security hardening**: CSP headers, navigation restrictions, IPC sender validation, permission prompts
-- **Performance**: Tab discarding at memory budget (1.5GB default), lazy restore, memory stats in status bar
-- **Packaging**: Windows NSIS installer with custom icon
+## Honest Status (v0.2.0)
 
-**Planned:**
-- True per-tab webviews (currently single webview with src swapping)
-- Search results page (internal, aggregated from multiple engines with AI summary)
+### What Actually Works
 
-## Screenshots
+| Feature | Status | Notes |
+|---------|--------|-------|
+| Multi-tab browsing | ✅ Working | Horizontal tabs, drag-reorder, pin, mute, duplicate, middle-click close, reopen closed |
+| Address bar + search | ✅ Working | URL entry, search detection, suggestions from history/bookmarks |
+| Navigation | ✅ Working | Back, forward, reload, stop, home, view source (Ctrl+U) |
+| Downloads panel | ✅ Working | Progress, pause/resume/cancel, open file/folder, retry, filter |
+| Bookmarks bar + manager | ✅ Working | Nested folders, add/edit/delete/move, HTML import/export |
+| History page | ✅ Working | Search, date groups, time filters, clear browsing data |
+| Settings (7 sections) | ✅ Working | General, Appearance, Search, Privacy, **Security**, Shortcuts, AI, About |
+| New Tab Page | ✅ Working | Search, top sites from history, recently closed |
+| Find in page, zoom, fullscreen, print | ✅ Working | Ctrl+F, Ctrl+/-, Ctrl+0, F11, Ctrl+P |
+| Private windows | ✅ Working | Separate `session.partition` (ephemeral, discarded on close) |
+| Global shortcuts | ✅ Working | 30+ registered via app menu |
+| Status bar | ✅ Working | Loading, zoom, security indicators |
+| Persistent sessions | ✅ Working | SQLite history (1000 entries), survives restart |
+
+### AI Features — What's Real vs Marketing
+
+| Feature | Reality |
+|---------|---------|
+| **5 Providers** (OpenAI, Anthropic, 9Router, LM Studio, Custom) | ✅ Implemented, each with its own adapter |
+| **Multi-API key per provider** | ✅ Keys stored in OS keychain (keytar), rotated on 429/401/403 |
+| **Auto-fallback with context preservation** | ✅ Works: key rotation → retry with backoff → next provider, conversation context preserved |
+| **Model slot routing (5 slots)** | ✅ UI assigns models to fastBrowsing/research/reasoning/coding/verification |
+| **Streaming chat sidebar** | ✅ Works, stop button, citations for cross-tab context |
+| **Cross-tab intelligence (BM25 retrieval)** | ✅ Extracts pages, chunks, indexes, answers with citations — 27 tests pass |
+| **AI Agent (10 tools)** | ⚠️ **Tools exist and are callable**, but **approval UI is basic**, agent loops can get stuck, no persistent agent memory across sessions |
+| **Page extraction** | ✅ Works via injected script, but **fails on SPA/heavy-JS sites** (React apps, infinite scroll, Shadow DOM) |
+| **Model discovery** | ✅ "Discover Models" button calls `/v1/models`, "Add provider + key" auto-configures first model |
+
+### Security — What's Real
+
+| Feature | Reality |
+|---------|---------|
+| Safe Browsing (enhanced/standard/none) | ⚠️ **Placeholder** — local list only, no Google Safe Browsing API v4 integration |
+| HTTPS-Only mode | ✅ Upgrades HTTP→HTTPS via `webRequest.onBeforeRequest` |
+| Insecure site warnings | ✅ Warns on HTTP (optionally including private IPs) |
+| DNS-over-HTTPS | ✅ Chromium switches (Google DNS), set at startup |
+| Password breach check | ✅ HaveIBeenPwned k-anonymity (SHA-1 prefix only) |
+| Ad/Tracker blocker | ⚠️ **declarativeNetRequest only works on `defaultSession`** — **does NOT work on custom partitions** (normal + private windows). Built-in 11 domains + EasyList download + per-site allowlist UI exist, but **blocking is inactive on your actual browsing partitions** |
+| Security headers (CSP, X-Frame-Options, etc.) | ✅ Applied on all responses via `webRequest.onHeadersReceived` |
+| Certificate manager | ✅ Opens `chrome://settings/certificates` |
+
+### Performance
+
+| Feature | Reality |
+|---------|---------|
+| Tab discarding at memory budget | ✅ 1.5GB default, discards inactive tabs, lazy restore |
+| Memory stats in status bar | ✅ Shows RSS/heap, updates every 10s |
+
+### Packaging
+
+| Feature | Reality |
+|---------|---------|
+| Windows NSIS installer | ✅ Builds `Ariadne Browser Setup 0.2.0.exe` |
+| GitHub Actions release | ✅ On tag push (`v*`), builds installer, creates release |
+
+---
+
+## Known Limitations (Be Harsh)
+
+### Architecture — Single Webview
+- **One `webview` per window**, tabs swapped via `src` attribute change
+- **No true tab isolation** — crash in one tab kills all tabs in that window
+- **No per-tab DevTools** — one DevTools for the webview
+- **Session state tied to webview** — `webContents` is shared
+
+### Private Windows ≠ Isolated Adblocking
+- Private windows use `partition: ariadne-private-${uuid}`
+- **declarativeNetRequest does not attach to custom partitions in Electron 45**
+- Adblocker loads rules but **cannot apply them** to your actual browsing sessions
+- This is an Electron limitation, not a bug in our code
+
+### AI Agent — Prototype Grade
+- Tools work individually (navigate, click, type, extract, screenshot, etc.)
+- **No persistent agent state** — restart = fresh agent
+- **Approval UI is a simple modal** — no "always allow for this domain", no bulk approval
+- **Agent can loop infinitely** — no step budget, no cost tracking
+- **No vision support** — tools are DOM/text only, cannot "see" the page
+- **Cross-tab context not auto-injected** into agent — you must manually extract first
+
+### Page Extraction — Brittle
+- Injected script runs in page context, **fails on:**
+  - Shadow DOM (closed mode)
+  - Heavy React/Vue apps with virtualized lists
+  - Sites with strict CSP blocking inline scripts
+  - Infinite scroll (only captures current viewport)
+- **No PDF/DOC extraction** — HTML only
+
+### AI Provider Gaps
+- **No streaming for Anthropic** — uses non-streaming endpoint, fakes chunks
+- **9Router requires API key** — no keyless tier, discovery fails without key
+- **Custom provider assumes OpenAI-compatible** — breaks on Ollama `/api/chat` vs `/v1/chat/completions` differences
+- **No model capability detection** — context window, vision, tools must be entered manually or discovered
+
+### Settings Persistence
+- `electron-store` files in `%APPDATA%/ariadne-browser/`
+- **No migration path** — schema changes = corrupted settings
+- **AI config separate** (`ai-providers.json`) — not in electron-store
+
+### Windows-Only Testing
+- **Developed and tested on Windows 11 only**
+- macOS/Linux: untested, likely broken (NSIS installer, keytar, paths, native modules)
+
+### No Auto-Update
+- No `electron-updater` integration
+- Manual reinstall required for new versions
+
+---
+
+## Screenshots (Latest Security Build)
 
 | New Tab Page | AI Sidebar | AI Settings | Add Provider Form |
 |:------------:|:----------:|:-----------:|:-----------------:|
-| ![New Tab](docs/screenshots-security/01-new-tab.png) | ![AI Sidebar](docs/screenshots-security/02-ai-sidebar.png) | ![AI Settings](docs/screenshots-security/03-ai-settings.png) | ![Add Provider](docs/screenshots-security/04-add-provider-form.png) |
+| ![New Tab](docs/screenshots-final-all/01-new-tab.png) | ![AI Sidebar](docs/screenshots-final-all/02-ai-sidebar.png) | ![AI Settings](docs/screenshots-final-all/03-ai-settings.png) | ![Add Provider](docs/screenshots-final-all/04-add-provider-form.png) |
 
-| Provider Form Filled | Provider Added | Settings (Security) | Appearance Settings | Web Page Loaded |
+| Provider Form Filled | Provider Added | Settings (Security) | Appearance Settings | Web Page (detik.com) |
 |:--------------------:|:--------------:|:--------:|:-------------------:|:---------------:|
-| ![Filled Form](docs/screenshots-security/05-provider-form-filled.png) | ![Added](docs/screenshots-security/06-provider-added.png) | ![Settings](docs/screenshots-security/07-settings.png) | ![Appearance](docs/screenshots-security/08-appearance-settings.png) | ![Web Page](docs/screenshots-security/09-web-page.png) |
+| ![Filled Form](docs/screenshots-final-all/05-provider-form-filled.png) | ![Added](docs/screenshots-final-all/06-provider-added.png) | ![Settings](docs/screenshots-final-all/07-settings.png) | ![Appearance](docs/screenshots-final-all/08-appearance-settings.png) | ![Web Page](docs/screenshots-final-all/09-web-page.png) |
+
+---
 
 ## Demo
 
@@ -51,12 +137,13 @@ An AI-native desktop browser built with Electron, React, and TypeScript. Browser
 [Watch full demo video (MP4)](docs/demo.mp4)
 
 ### Indonesian Rhino Demo
+Searches for "badak sumatera meninggal setelah dipindahkan indonesia" (Sumatran rhino conservation issue).
 
 ![Indonesian Rhino Demo](docs/demo-indonesian-rhino.gif)
 
 [Watch Indonesian Rhino demo video (MP4)](docs/demo-indonesian-rhino.mp4)
 
-*Searches for "badak sumatera meninggal setelah dipindahkan indonesia" (Sumatran rhino dies after being moved in Indonesia) - a real trending political/conservation issue in Indonesia.*
+---
 
 ## Quick Start
 
@@ -77,8 +164,6 @@ npm start
 
 ### AI Setup
 
-The browser works without AI configured. To enable:
-
 1. Open Settings → AI or click the 🤖 button in the address bar
 2. Add a provider:
    - **LM Studio** (local, no API key): Start LM Studio server, add provider with base URL `http://localhost:1234/v1`
@@ -88,6 +173,8 @@ The browser works without AI configured. To enable:
    - **Custom**: Any OpenAI-compatible endpoint (Ollama, vLLM, TGI, LocalAI, etc.)
 3. Assign models to task slots (fastBrowsing, research, reasoning, coding, verification)
 4. Use the AI sidebar (Ctrl+Shift+A) to chat with current page or cross-tab context
+
+---
 
 ## AI Providers
 
@@ -100,68 +187,12 @@ The browser works without AI configured. To enable:
 | Custom | `custom` | Any OpenAI-compatible | Optional | Ollama, vLLM, TGI, LocalAI, etc. |
 
 **Multi-API Key Support:**
-- Each provider can store **multiple API keys** (e.g., multiple OpenAI keys, multiple Anthropic keys)
-- Keys stored securely in OS keychain (Windows Credential Manager, macOS Keychain, Linux Secret Service)
-- **Automatic key rotation** on rate limits (429), auth errors (401/403), quotas
+- Each provider stores **multiple API keys** in OS keychain
+- **Automatic key rotation** on rate limits (429), auth errors (401/403)
 - **Auto-fallback to next provider** with context preserved when all keys exhausted
-- Configure in Settings → AI → Provider → "Add API Key" (repeat for multiple)
+- Configure in Settings → AI → Provider → "Add API Key"
 
-**Adding a provider:**
-1. Settings → AI → "Add Provider"
-2. Select type, enter name, base URL
-3. Add one or more API keys via secure prompt
-4. Save → provider appears in list, test with "Health Check"
-5. Enable "Allow Fallback" for providers you want as backups
-6. Set "Fallback Priority" (lower = higher priority)
-7. Assign models to slots in the Model Slots section
-
-## Smart Fallback System
-
-When a request fails, Ariadne automatically:
-
-1. **Key Rotation** — tries next API key on same provider (for rate limits, auth errors)
-2. **Retry with Backoff** — exponential backoff (1s, 2s, 4s, max 10s) for transient errors
-3. **Provider Fallback** — switches to next allowed fallback provider, preserving full conversation context
-4. **Model Selection** — uses first available model on fallback provider
-
-All happens transparently — the chat stream continues without user intervention.
-
-## Search Engines
-
-Built-in search engines (configurable in Settings → Search):
-- **Google** (`g`) — `https://www.google.com/search?q=%s`
-- **DuckDuckGo** (`d`) — `https://duckduckgo.com/?q=%s`
-- **Bing** (`b`) — `https://www.bing.com/search?q=%s`
-- **Brave Search** (`br`) — `https://search.brave.com/search?q=%s`
-- **Startpage** (`sp`) — `https://www.startpage.com/sp/search?query=%s`
-- **Wikipedia** (`w`) — `https://en.wikipedia.org/w/index.php?search=%s`
-
-**Keyword search:** Type `g query` or `d query` in address bar to search with that engine.
-
-## AI Agent
-
-The AI Agent allows the AI to autonomously browse:
-
-| Capability | Description |
-|------------|-------------|
-| **Navigate** | Go to any URL |
-| **Search** | Query search engines, parse results, click links |
-| **Click** | Click links, buttons, elements by selector/text |
-| **Type** | Fill forms, search boxes, inputs |
-| **Scroll** | Scroll pages, find elements |
-| **Find** | Search text on page, highlight matches |
-| **Highlight** | Mark text, images, elements visually (colored overlays) |
-| **Extract** | Read page content, tables, structured data |
-| **Screenshot** | Capture viewport or element |
-| **Wait** | Wait for navigation, elements, conditions |
-
-Tools exposed via function calling to the AI model. The agent can:
-- "Search for X and open the first result"
-- "Find all mentions of Y on this page and highlight them"
-- "Navigate to Z, fill the form, and submit"
-- "Compare prices across these 3 sites"
-
-Each tool call shows a preview with "Approve" / "Deny" so the user stays in control.
+---
 
 ## Project Structure
 
@@ -172,6 +203,7 @@ src/
 │   ├── tabs.ts              # Tab state + SQLite history
 │   ├── profile.ts           # Isolated profile support
 │   ├── capture.ts           # Automated screenshot/demo capture
+│   ├── security.ts          # Safe Browsing, HTTPS-Only, Adblock, Breach check
 │   ├── ai/                  # AI system
 │   │   ├── index.ts         # AISystem facade
 │   │   ├── registry.ts      # ProviderRegistry: multi-key, auto-fallback, retry logic
@@ -180,42 +212,28 @@ src/
 │   │   ├── types.ts         # Shared AI types
 │   │   ├── agent-tools.ts   # 10 browser automation tools + approval UI
 │   │   ├── providers/       # 5 provider implementations
-│   │   │   ├── openai.ts
-│   │   │   ├── anthropic.ts
-│   │   │   ├── ninerouter.ts
-│   │   │   ├── lmstudio.ts
-│   │   │   └── custom.ts
-│   │   └── context/         # Cross-tab intelligence
-│   │       ├── PageExtractor.ts
-│   │       ├── extraction-script.js
-│   │       ├── EmbeddingStore.ts
-│   │       ├── SessionContext.ts
-│   │       ├── chunking.ts
-│   │       ├── dedupe.ts
-│   │       ├── extraction.ts
-│   │       ├── manager.ts
-│   │       ├── ranking.ts
-│   │       ├── qa.ts
-│   │       ├── types.ts
-│   │       └── provider-adapter.ts
+│   │   └── context/         # Cross-tab intelligence (BM25, extraction, Q&A)
 ├── preload.ts               # contextBridge IPC surface
 ├── shared/                  # Shared utilities
-│   └── search-engines.ts    # Search engine registry + navigation resolution
 └── renderer/                # React UI
     ├── main.tsx             # App shell, state, webview
     ├── styles.css           # Dark theme, all components styled
-    └── components/
-        ├── TabStrip.tsx     # Horizontal tabs, DnD, pin/mute, search
-        ├── AddressBar.tsx   # URL/search with suggestions
-        ├── DownloadsPanel.tsx
-        ├── BookmarksBar.tsx
-        ├── HistoryPage.tsx
-        ├── SettingsPage.tsx
-        ├── NewTabPage.tsx
-        ├── SearchResultsPage.tsx  # Aggregated search + AI summary
-        └── ai/
-            └── ChatSidebar.tsx    # Streaming chat, model slots, context preview, agent tools
+    └── components/          # TabStrip, AddressBar, SettingsPage, ChatSidebar, etc.
 ```
+
+---
+
+## Architecture
+
+- **Single webview per window**, tabs swapped via `src` change (planned: WebContentsView per tab)
+- **Partition `persist:ariadne`** for session persistence
+- **Private windows** use unique partition `ariadne-private-${timestamp}`
+- **AI runs in main process only** — renderer never sees API keys
+- **Extraction script** injected via `executeJavaScript` into webContents
+- **Settings** via `electron-store`
+- **AI config** in `ai-providers.json` (providers, model slots, API key refs)
+
+---
 
 ## Scripts
 
@@ -230,39 +248,7 @@ src/
 }
 ```
 
-## Architecture
-
-- **Single webview per window**, tabs swapped via `src` change (planned: one WebContentsView per tab)
-- **Partition `persist:ariadne`** for session persistence across restarts
-- **Private windows** use unique partition `ariadne-private-${timestamp}`
-- **AI runs in main process only** — renderer never sees API keys
-- **Extraction script** injected via `executeJavaScript` into webContents
-- **Settings** via `electron-store` (settings, bookmarks, downloads)
-- **AI config** in `ai-providers.json` (providers, model slots, usage, API key refs)
-
-## Configuration
-
-Settings stored via `electron-store`:
-- `settings` — UI prefs, search engines, shortcuts
-- `bookmarks` — nested folder structure
-- `downloads` — download history
-
-AI config in `ai-providers.json` (provider configs, model slots, usage, API key refs).
-
-Cross-tab context in `context-store.json` (items, chunks, stats, exclusions).
-
-## Development
-
-```bash
-# Watch mode for renderer (not configured yet)
-npm run dev:renderer   # vite dev server
-
-# Watch mode for main (requires restart)
-npm run dev:electron   # tsc -w
-
-# Run with DevTools open (default)
-npm start
-```
+---
 
 ## Target Environment
 
@@ -270,6 +256,18 @@ npm start
 - Optimized for limited SSD (bounded caches, no idle polling)
 - Minimal dependencies
 
+---
+
 ## License
 
 MIT
+
+---
+
+## If You're Evaluating This
+
+**Use it if:** You want a local-first browser with integrated AI sidebar, cross-tab context retrieval, and you're okay with single-webview architecture and Windows-only.
+
+**Don't use it if:** You need true tab isolation, working adblocker on all partitions, production-grade AI agent, or cross-platform support.
+
+**Contributions welcome** — especially on: per-tab WebContentsView, declarativeNetRequest on custom partitions, agent vision/state, extraction robustness.
