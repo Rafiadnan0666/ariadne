@@ -53,13 +53,31 @@ export class CustomProvider extends BaseProvider {
     if (this.customConfig.requestTransform) {
       return this.customConfig.requestTransform(request);
     }
-    return {
+    const messages = request.messages.map((m) => {
+      const out: Record<string, unknown> = { role: m.role };
+      if (typeof m.content === 'string') {
+        out.content = m.content;
+      } else {
+        out.content = m.content.map((part) =>
+          part.type === 'text'
+            ? { type: 'text', text: part.text }
+            : { type: 'image_url', image_url: part.image_url }
+        );
+      }
+      if (m.toolCalls && m.toolCalls.length > 0) out.tool_calls = m.toolCalls;
+      if (m.toolCallId) out.tool_call_id = m.toolCallId;
+      return out;
+    });
+    const body: Record<string, unknown> = {
       model: request.model,
-      messages: request.messages,
+      messages,
       temperature: request.temperature ?? 0.7,
       max_tokens: request.maxTokens,
       stream: request.stream,
     };
+    if (request.tools && request.tools.length > 0) body.tools = request.tools;
+    if (request.toolChoice) body.tool_choice = request.toolChoice;
+    return body;
   }
 
   protected transformResponse(response: unknown): ChatCompletionResponse {
@@ -67,14 +85,30 @@ export class CustomProvider extends BaseProvider {
       return this.customConfig.responseTransform(response);
     }
     const r = response as any;
+    // DEBUG: log raw response from Ollama
+    console.log('[CustomProvider] Raw response:', JSON.stringify(r, null, 2).slice(0, 2000));
     return {
       id: r.id || `custom-${Date.now()}`,
       model: r.model || this.config.defaultModel || 'unknown',
-      choices: (r.choices || []).map((c: any, i: number) => ({
+      choices: (r.choices || []).map((c: any, i: number) => {
+        const msg = c.message || {};
+        // Reasoning models (e.g. qwen3) may return the answer in `reasoning`
+        // or leave `content` as empty string. Normalize so the agent loop never 
+        // sees empty content and the UI never falls back to "Agent completed."
+        const rawContent = msg.content;
+        const content = (rawContent !== undefined && rawContent !== '' ? rawContent : undefined) ?? c.text ?? c.reasoning ?? msg.reasoning ?? '';
+        return {
         index: c.index ?? i,
-        message: c.message || { role: 'assistant', content: c.text || c.content || '' },
+        message: { 
+          ...msg, 
+          role: msg.role || 'assistant', 
+          content,
+          // Ollama uses snake_case tool_calls; normalize to camelCase for agent loop
+          toolCalls: msg.tool_calls || msg.toolCalls,
+        },
         finishReason: c.finish_reason || c.finishReason || 'stop',
-      })),
+      };
+      }),
       usage: r.usage
         ? {
             promptTokens: r.usage.prompt_tokens ?? r.usage.promptTokens ?? 0,
@@ -92,13 +126,15 @@ export class CustomProvider extends BaseProvider {
     const c = chunk as any;
     if (c.choices && c.choices.length > 0) {
       const choice = c.choices[0];
+      // Reasoning models may put content in reasoning (in delta or top-level)
+      const deltaContent = choice.delta?.content ?? choice.delta?.reasoning ?? choice.text ?? choice.reasoning ?? '';
       return {
         id: c.id,
         model: c.model,
         choices: [
           {
             index: choice.index ?? 0,
-            delta: { content: choice.delta?.content || choice.text || '' },
+            delta: { content: deltaContent },
             finishReason: choice.delta?.finish_reason || choice.finish_reason || null,
           },
         ],

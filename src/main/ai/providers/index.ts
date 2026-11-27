@@ -17,8 +17,12 @@ export function createProvider(config: ProviderConfig, customConfig?: CustomAdap
     case 'lmstudio':
       return new LMStudioProvider(config);
     case 'custom':
-      if (!customConfig) throw new Error('Custom provider requires CustomAdapterConfig');
-      return new CustomProvider(config, customConfig);
+      // Generic OpenAI-compatible endpoint works out of the box; callers may
+      // override the default paths via customConfig.
+      return new CustomProvider(config, customConfig ?? {
+        chatCompletionsPath: '/chat/completions',
+        modelsPath: '/models',
+      });
     default:
       const exhaustive: never = config.type;
       throw new Error(`Unknown provider type: ${exhaustive}`);

@@ -10,7 +10,7 @@
 // - Shadow DOM (open mode) is traversed
 // - Infinite scroll: auto-scrolls to bottom with timeout
 
-(function () {
+(async function () {
   'use strict';
 
   var MAX_TEXT_LENGTH = 50000;

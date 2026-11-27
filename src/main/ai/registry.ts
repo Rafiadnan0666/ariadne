@@ -21,7 +21,13 @@ import { storeCredential, getCredential, deleteCredential, listCredentials, mask
 import * as path from 'path';
 import * as fs from 'fs';
 import { app, BrowserWindow, webContents } from 'electron';
-import { AGENT_TOOLS, executeAgentTool, AgentToolContext } from './agent-tools';
+import {
+  AGENT_TOOLS,
+  AGENT_APPROVAL_TOOLS,
+  buildToolPreview,
+  executeAgentTool,
+  AgentToolContext,
+} from './agent-tools';
 
 const REGISTRY_FILE = 'ai-providers.json';
 const USAGE_FILE = 'ai-usage.json';
@@ -577,15 +583,30 @@ export class ProviderRegistry {
     }
   }
 
-  /** Execute a tool call and return the result */
+  /** Execute a tool call and return the result. Mutating tools are gated by user approval. */
   async executeToolCall(
     toolCall: ToolCall,
     context: AgentToolContext
-  ): Promise<{ success: boolean; result?: unknown; error?: string }> {
+  ): Promise<{ success: boolean; result?: unknown; error?: string; denied?: boolean }> {
+    const name = toolCall.function.name;
+    let args: Record<string, unknown>;
     try {
-      const args = JSON.parse(toolCall.function.arguments);
-      const result = await executeAgentTool(toolCall.function.name, args, context);
-      return { success: result.success, result: result.result, error: result.error };
+      args = JSON.parse(toolCall.function.arguments || '{}');
+    } catch (error) {
+      return { success: false, error: `Invalid tool arguments JSON: ${String(error)}` };
+    }
+
+    if (AGENT_APPROVAL_TOOLS.has(name) && context.requestApproval) {
+      const preview = buildToolPreview(name, args);
+      const approved = await context.requestApproval(toolCall, preview);
+      if (!approved) {
+        return { success: false, denied: true, error: 'User denied this action. Do not retry it without asking.' };
+      }
+    }
+
+    try {
+      const result = await executeAgentTool(name, args, context);
+      return { success: result.success, result: result.result, error: result.error, denied: result.denied };
     } catch (error) {
       return { success: false, error: String(error) };
     }
@@ -595,9 +616,9 @@ export class ProviderRegistry {
   async runAgentLoop(
     request: ChatCompletionRequest,
     context: AgentToolContext,
-    onToolCall: (toolCall: ToolCall, result: { success: boolean; result?: unknown; error?: string }) => void,
+    onToolCall: (toolCall: ToolCall, result: { success: boolean; result?: unknown; error?: string; denied?: boolean }) => void,
     onStep: (step: { type: 'plan' | 'execute' | 'observe'; content: string }) => void,
-    maxSteps: number = 10
+    maxSteps: number = 12
   ): Promise<ChatCompletionResponse> {
     const modelId = request.model;
     const result = await this.getModelById(modelId);
@@ -614,8 +635,20 @@ export class ProviderRegistry {
       role: 'system',
       content: `You are an AI browser agent. You can use tools to interact with web pages.
 Available tools: ${AGENT_TOOLS.map(t => t.function.name).join(', ')}
-When using tools, explain your reasoning. Be concise.
-If a tool requires approval, wait for user confirmation before proceeding.`
+Tool usage guide:
+- navigate / search: Go to a URL or search the web. REQUIRES APPROVAL.
+- click / type: Interact with page elements. REQUIRES APPROVAL.
+- extract: READ the current page content. Use this AFTER navigate to get page text, headings, links. SAFE (no approval).
+- scroll: Scroll the page. SAFE.
+- find: Find text on page. SAFE.
+- highlight: Highlight elements. SAFE.
+- screenshot: Capture page image. SAFE.
+- wait: Wait for element/navigation. SAFE.
+
+WORKFLOW: After navigate/search, ALWAYS call extract to read the page. Do not guess content.
+When task asks for specific text on a page: navigate → extract → answer.
+When task asks to interact: navigate → extract (to find selectors) → click/type → extract → answer.
+Be concise. If a tool requires approval, wait for user confirmation before proceeding.`
     };
     
     if (!messages.some(m => m.role === 'system')) {

@@ -105,6 +105,9 @@ interface WindowState {
   partition: string
 }
 
+/** Pending agent tool approvals, keyed by tool call id. */
+const pendingAgentApprovals = new Map<string, (approved: boolean) => void>()
+
 const settingsStore = new Store({ name: 'settings' }) as unknown as {
   get(key: string): unknown
   set(key: string, value: unknown): void
@@ -1116,7 +1119,17 @@ function registerIpc(): void {
   // AI --------------------------------------------------------------------
   handle('ai:config:get', async () => aiSystem.getConfig())
   handle('ai:config:update', async (_event, updates) => aiSystem.updateConfig(updates))
-  handle('ai:provider:add', async (_event, config, apiKeys?: string[]) => aiSystem.addProvider(config, apiKeys))
+  handle('ai:provider:add', async (_event, config, apiKeys?: string[]) => {
+    await aiSystem.addProvider(config, apiKeys)
+    // Prod behaviour: a freshly added provider is immediately usable even if
+    // the user never touches the model-slot dropdowns.
+    const firstModel = config?.models?.[0]?.id || config?.defaultModel
+    if (firstModel) {
+      const slots = aiSystem.getRegistry().getAllModelSlots()
+      if (!slots.fastBrowsing) aiSystem.setModelSlot('fastBrowsing', firstModel)
+      if (!slots.research) aiSystem.setModelSlot('research', firstModel)
+    }
+  })
   handle('ai:provider:remove', async (_event, id) => aiSystem.removeProvider(id))
   handle('ai:provider:test', async (_event, id, apiKeys?: string[]) => aiSystem.testProvider(id, apiKeys))
   handle('ai:provider:set-keys', async (_event, providerId, apiKeys: string[]) => aiSystem.setApiKeys(providerId, apiKeys))
@@ -1192,9 +1205,34 @@ function registerIpc(): void {
     if (!winState) throw new Error('No window')
     const tab = getTabs(winState.id).find(t => t.id === context.tabId)
     if (!tab || !tab.webContentsId) throw new Error('Tab not found')
-    
-    const toolContext = { tabId: context.tabId, webContentsId: tab.webContentsId, window: winState.window }
-    
+
+    const autoApprove = process.env.ARIADNE_AUTO_APPROVE === '1'
+
+    const toolContext = {
+      tabId: context.tabId,
+      webContentsId: tab.webContentsId,
+      window: winState.window,
+      requestApproval: (toolCall: { id: string; type: 'function'; function: { name: string; arguments: string } }, preview: string) => {
+        if (autoApprove) return Promise.resolve(true)
+        return new Promise<boolean>((resolve) => {
+          if (winState.window.isDestroyed() || winState.window.webContents.isDestroyed()) {
+            resolve(false)
+            return
+          }
+          pendingAgentApprovals.set(toolCall.id, resolve)
+          winState.window.webContents.send('ai:agent:tool-call', {
+            toolCall,
+            preview,
+            requiresApproval: true,
+          })
+          // Deny if the user never answers (keeps the agent from hanging forever).
+          setTimeout(() => {
+            if (pendingAgentApprovals.delete(toolCall.id)) resolve(false)
+          }, 120000)
+        })
+      },
+    }
+
     return aiSystem.getRegistry().runAgentLoop(
       request,
       toolContext,
@@ -1210,9 +1248,13 @@ function registerIpc(): void {
       }
     )
   })
-  
+
   handle('ai:agent:approve', async (_event, toolCallId: string, approved: boolean) => {
-    // Tool approval handled in renderer - this is for tracking
+    const resolve = pendingAgentApprovals.get(toolCallId)
+    if (resolve) {
+      pendingAgentApprovals.delete(toolCallId)
+      resolve(approved === true)
+    }
     return { success: true, toolCallId, approved }
   })
 
@@ -1344,11 +1386,15 @@ if (!hasLock) {
 
     const captureDir = process.env.ARIADNE_CAPTURE_DIR
     const demoDir = process.env.ARIADNE_DEMO_DIR
+    const e2eDir = process.env.ARIADNE_E2E_DIR
     const windowForCapture = () => {
       const first = Array.from(windows.values())[0]
       return first && !first.window.isDestroyed() ? first.window : undefined
     }
-    if (demoDir) {
+    if (e2eDir) {
+      const { runAgentE2E } = await import('./e2e-agent')
+      void runAgentE2E(e2eDir, windowForCapture)
+    } else if (demoDir) {
       const { runDemo } = await import('./capture')
       void runDemo(demoDir, windowForCapture)
     } else if (captureDir) {

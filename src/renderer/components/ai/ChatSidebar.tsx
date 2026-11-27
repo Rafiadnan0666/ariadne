@@ -232,7 +232,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       setProviders(providersData)
       setSystemPrompt(prompt)
       setPromptDraft((draft) => (promptSaved ? prompt : draft))
-      setProviderTypes(types.filter((type) => type !== 'custom'))
+      setProviderTypes(types)
       const preferred = (['fastBrowsing', 'research', 'reasoning', 'coding', 'verification'] as ModelSlot[]).find(
         (slot) => slotsData[slot]
       )
@@ -312,25 +312,27 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     window.electronAPI.ai.getAgentTools().then(setAgentTools).catch(console.error)
   }, [isOpen])
 
-  // Agent: listen for step updates
+  // Agent: listen for step updates. Subscribed whenever the sidebar is open so
+  // events emitted before React flips agentRunning are never dropped.
   useEffect(() => {
-    if (!isOpen || !agentRunning) return
+    if (!isOpen) return
     const unsub = window.electronAPI.ai.onAgentStep((step: AgentStep) => {
       setAgentSteps((prev) => [...prev, step])
     })
     return () => unsub()
-  }, [isOpen, agentRunning])
+  }, [isOpen])
 
   // Agent: listen for tool calls requiring approval
   useEffect(() => {
-    if (!isOpen || !agentRunning) return
+    if (!isOpen) return
     const unsub = window.electronAPI.ai.onAgentToolCall((payload: { toolCall: ToolCall; preview: string; requiresApproval: boolean }) => {
       const promise = new Promise<boolean>((resolve) => {
         setPendingToolCalls((prev) => [...prev, { toolCall: payload.toolCall, preview: payload.preview, requiresApproval: payload.requiresApproval, resolve }])
       })
+      void promise
     })
     return () => unsub()
-  }, [isOpen, agentRunning])
+  }, [isOpen])
 
   const currentModel = models.find((model) => model.id === slots[selectedSlot]) || null
   const contextWindow = currentModel?.capabilities.contextWindow || 8192
@@ -592,9 +594,17 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
         pending.resolve(approved)
         setPendingToolCalls((prev) => prev.filter((p) => p.toolCall.id !== toolCallId))
       }
+      // Tell the main process so the waiting agent loop resumes (or aborts).
+      void window.electronAPI.ai.approveTool(toolCallId, approved).catch(() => undefined)
     },
     [pendingToolCalls]
   )
+
+  const clearChat = useCallback(() => {
+    setMessages([])
+    setAgentSteps([])
+    setPendingToolCalls([])
+  }, [])
 
   const savePrompt = useCallback(async () => {
     try {
@@ -624,7 +634,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
       setSettingsError('Enter the model ID exposed by the provider.')
       return
     }
-    if (providerForm.type !== 'lmstudio' && !providerForm.apiKey.trim()) {
+    const keylessTypes = ['lmstudio', 'custom']
+    if (!keylessTypes.includes(providerForm.type) && !providerForm.apiKey.trim()) {
       setSettingsError('This provider requires an API key.')
       return
     }
@@ -646,7 +657,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           capabilities: {
             contextWindow: Math.max(1024, Number(providerForm.contextWindow) || 128000),
             supportsVision: false,
-            supportsTools: false,
+            supportsTools: true,
             supportsStreaming: true,
           },
         },
@@ -787,6 +798,14 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           </div>
         </div>
         <div className="ai-header-actions">
+          <button
+            className="icon-btn"
+            onClick={clearChat}
+            title="New chat"
+            aria-label="New chat"
+          >
+            <Icon name="plus" size={15} />
+          </button>
           <button
             className={`icon-btn ${agentMode ? 'active' : ''}`}
             onClick={() => setAgentMode((v) => !v)}
@@ -1267,7 +1286,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           onKeyDown={(event) => {
             if (event.key === 'Enter' && !event.shiftKey) {
               event.preventDefault()
-              void sendMessage(input)
+              void (agentMode ? runAgent(input) : sendMessage(input))
             }
           }}
           placeholder={currentModel ? 'Ask about this page…' : 'Configure a model to start'}

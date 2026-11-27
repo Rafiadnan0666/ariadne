@@ -1,6 +1,6 @@
 {
   "name": "ariadne-browser",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "AI-native desktop browser with cross-tab intelligence and autonomous agent runtime",
   "author": "Ariadne Team",
   "main": "dist/main/index.js",

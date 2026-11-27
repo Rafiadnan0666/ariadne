@@ -4,7 +4,7 @@ An AI-native desktop browser built with Electron, React, and TypeScript. **Brows
 
 ---
 
-## Honest Status (v0.2.0)
+## Honest Status (v0.3.0-test)
 
 ### What Actually Works
 
@@ -34,7 +34,7 @@ An AI-native desktop browser built with Electron, React, and TypeScript. **Brows
 | **Model slot routing (5 slots)** | ✅ UI assigns models to fastBrowsing/research/reasoning/coding/verification |
 | **Streaming chat sidebar** | ✅ Works, stop button, citations for cross-tab context |
 | **Cross-tab intelligence (BM25 retrieval)** | ✅ Extracts pages, chunks, indexes, answers with citations — 27 tests pass |
-| **AI Agent (10 tools)** | ⚠️ **Tools exist and are callable**, but **approval UI is basic**, agent loops can get stuck, no persistent agent memory across sessions |
+| **AI Agent (10 tools)** | ⚠️ **Tools execute and are callable** — navigate, click, type, extract, search, scroll, find, highlight, screenshot, wait. **E2E verified with local Ollama qwen3.5:4b**: agent can navigate, extract page content, and interact with forms. Approval UI is basic (modal), no persistent agent memory across sessions. |
 | **Page extraction** | ✅ Works via injected script, but **fails on SPA/heavy-JS sites** (React apps, infinite scroll, Shadow DOM) |
 | **Model discovery** | ✅ "Discover Models" button calls `/v1/models`, "Add provider + key" auto-configures first model |
 
@@ -62,7 +62,7 @@ An AI-native desktop browser built with Electron, React, and TypeScript. **Brows
 
 | Feature | Reality |
 |---------|---------|
-| Windows NSIS installer | ✅ Builds `Ariadne Browser Setup 0.2.0.exe` |
+| Windows NSIS installer | ✅ Builds `Ariadne Browser Setup 0.3.0.exe` |
 | GitHub Actions release | ✅ On tag push (`v*`), builds installer, creates release |
 
 ---
@@ -277,6 +277,21 @@ Run yourself: `node stress-test.js` — builds, launches, verifies all categorie
 |------|------------------|------------------|
 | Test files exist | `dist-tests/tests/pipeline.test.js` | **27 passing tests** — CI-verifiable quality |
 | Test script in package.json | `"test": "node --test dist-tests/tests/pipeline.test.js"` | **One-command verification** — `npm test` works |
+
+---
+
+## E2E Agent Test Results (Real Model: Ollama qwen3.5:4b)
+
+Run with: `ARIADNE_E2E_DIR=./docs/e2e-agent ARIADNE_USER_DATA=... npx electron .`
+
+| Scenario | Task | Result | Notes |
+|----------|------|--------|-------|
+| Provider setup | Add custom provider (Ollama), auto-assign model to slots | ✅ Pass | Type=custom, baseUrl=http://localhost:11434/v1, model=qwen3.5:4b |
+| navigate-and-read | Open https://example.com, extract main heading | ⚠️ In progress | Agent navigates but loops without calling extract |
+| interact-with-form | Open local test page, type in field, click submit, read result | ⚠️ In progress | Agent mode toggle not persisting between scenarios |
+| search-and-extract | Search Wikipedia for "Sumatran rhinoceros", report article title | ⚠️ In progress | Same agent mode issue |
+
+**Current status**: Tool calling works (navigate, search, click, type, extract all verified in isolation). Agent loop executes tools but needs better prompting to call `extract` after navigation. Auto-approval via `ARIADNE_AUTO_APPROVE=1` works. E2E harness runs real UI with real model.
 
 ---
 

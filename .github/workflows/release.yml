@@ -59,5 +59,7 @@ jobs:
         with:
           files: dist-electron/*.exe
           generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-test') }}
+          name: ${{ contains(github.ref_name, '-test') && 'Ariadne Test Build' || 'Ariadne Browser' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

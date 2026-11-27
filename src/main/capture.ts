@@ -44,9 +44,10 @@ async function selectLabel(window: BrowserWindow, label: string, value: string):
       const label = labels.find((el) => (el.querySelector('span')?.textContent || '').trim() === '${escapedLabel}')
       const select = label?.querySelector('select')
       if (!select) return false
-      select.value = '${escapedValue}'
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set
+      setter.call(select, '${escapedValue}')
       select.dispatchEvent(new Event('change', { bubbles: true }))
-      return true
+      return select.value === '${escapedValue}'
     })()`
   )) as boolean
 }
