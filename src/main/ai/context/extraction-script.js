@@ -7,6 +7,8 @@
 // - elements marked data-private / data-sensitive are skipped
 // - hidden elements, scripts, styles and embedded frames are skipped
 // - output is bounded
+// - Shadow DOM (open mode) is traversed
+// - Infinite scroll: auto-scrolls to bottom with timeout
 
 (function () {
   'use strict';
@@ -16,6 +18,8 @@
   var MAX_HEADINGS = 200;
   var MAX_LINKS = 150;
   var MAX_METADATA_VALUE = 1000;
+  var SCROLL_MAX_ATTEMPTS = 5;
+  var SCROLL_WAIT_MS = 800;
 
   var BLOCKED_SELECTOR = [
     'script', 'style', 'noscript', 'iframe', 'frame', 'svg', 'canvas',
@@ -28,6 +32,49 @@
   var SENSITIVE_HINT = /password|passwd|pwd|credit|card|cvv|cvc|ssn|social.?security|secret|token|api.?key|iban|routing|account.?number|one.?time|otp/i;
 
   var styleCache = new WeakMap();
+
+  // --- Shadow DOM traversal ---
+  function getAllElements(root) {
+    var elements = [];
+    var walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT, {
+      acceptNode: function (node) { return NodeFilter.FILTER_ACCEPT; }
+    });
+    var node;
+    while ((node = walker.nextNode())) {
+      elements.push(node);
+      // Traverse open Shadow DOM
+      if (node.shadowRoot && node.shadowRoot.mode === 'open') {
+        elements = elements.concat(getAllElements(node.shadowRoot));
+      }
+    }
+    return elements;
+  }
+
+  // --- Infinite scroll handling ---
+  function scrollToBottom() {
+    return new Promise(function (resolve) {
+      var attempts = 0;
+      var lastHeight = document.body.scrollHeight;
+
+      function attemptScroll() {
+        window.scrollTo(0, document.body.scrollHeight);
+        setTimeout(function () {
+          var newHeight = document.body.scrollHeight;
+          attempts++;
+          if (attempts >= SCROLL_MAX_ATTEMPTS || newHeight === lastHeight) {
+            // Scroll back to top for normal extraction
+            window.scrollTo(0, 0);
+            resolve();
+          } else {
+            lastHeight = newHeight;
+            attemptScroll();
+          }
+        }, SCROLL_WAIT_MS);
+      }
+
+      attemptScroll();
+    });
+  }
 
   function isVisible(el) {
     if (!el || el.nodeType !== 1) return true;
@@ -79,26 +126,33 @@
     ];
     var best = null;
     var bestLength = 0;
-    for (var i = 0; i < selectors.length; i++) {
-      var nodes = document.querySelectorAll(selectors[i]);
-      for (var j = 0; j < nodes.length; j++) {
-        var node = nodes[j];
-        if (!isVisible(node)) continue;
-        var length = blockTextLength(node);
-        if (length > bestLength) {
-          best = node;
-          bestLength = length;
-        }
+    // Use getAllElements to include Shadow DOM
+    var allElements = getAllElements(document.body || document.documentElement);
+    for (var i = 0; i < allElements.length; i++) {
+      var node = allElements[i];
+      // Check if node matches any selector
+      var matches = false;
+      for (var s = 0; s < selectors.length; s++) {
+        try {
+          if (node.matches && node.matches(selectors[s])) { matches = true; break; }
+        } catch (e) {}
+      }
+      if (!matches) continue;
+      if (!isVisible(node)) continue;
+      var length = blockTextLength(node);
+      if (length > bestLength) {
+        best = node;
+        bestLength = length;
       }
     }
-    // Only trust a narrow root when it actually contains a useful amount of
-    // prose; otherwise fall back to the whole body.
     if (best && bestLength >= 300) return best;
     return document.body || document.documentElement;
   }
 
   function getReadableText(root) {
     if (!root) return '';
+    // Get all text nodes including from Shadow DOM
+    var allTextNodes = [];
     var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: function (node) {
         var parent = node.parentElement;
@@ -109,12 +163,33 @@
         return NodeFilter.FILTER_ACCEPT;
       }
     });
+    var node;
+    while ((node = walker.nextNode())) {
+      allTextNodes.push(node);
+    }
+    // Also get text from open Shadow DOM roots not captured by walker
+    var allElements = getAllElements(root);
+    for (var i = 0; i < allElements.length; i++) {
+      var el = allElements[i];
+      if (el.shadowRoot && el.shadowRoot.mode === 'open') {
+        var sw = document.createTreeWalker(el.shadowRoot, NodeFilter.SHOW_TEXT, {
+          acceptNode: function (n) {
+            var p = n.parentElement;
+            if (!p) return NodeFilter.FILTER_REJECT;
+            if (isBlocked(p)) return NodeFilter.FILTER_REJECT;
+            if (!isVisible(p)) return NodeFilter.FILTER_REJECT;
+            if (!n.textContent || !n.textContent.trim()) return NodeFilter.FILTER_REJECT;
+            return NodeFilter.FILTER_ACCEPT;
+          }
+        });
+        while ((node = sw.nextNode())) allTextNodes.push(node);
+      }
+    }
 
     var parts = [];
     var total = 0;
-    var node;
-    while ((node = walker.nextNode())) {
-      var text = node.textContent.replace(/\s+/g, ' ').trim();
+    for (var t = 0; t < allTextNodes.length; t++) {
+      var text = allTextNodes[t].textContent.replace(/\s+/g, ' ').trim();
       if (!text) continue;
       parts.push(text);
       total += text.length + 1;
@@ -139,17 +214,20 @@
   function getHeadings() {
     var headings = [];
     var seen = {};
-    var nodes = document.querySelectorAll('h1, h2, h3, h4, h5, h6');
-    for (var i = 0; i < nodes.length && headings.length < MAX_HEADINGS; i++) {
-      var el = nodes[i];
-      if (!isVisible(el) || isBlocked(el)) continue;
-      var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
-      if (!text || text.length > 300) continue;
-      var level = parseInt(el.tagName.charAt(1), 10) || 1;
-      var key = level + ':' + text;
-      if (seen[key]) continue;
-      seen[key] = true;
-      headings.push({ level: level, text: text });
+    // Include Shadow DOM elements
+    var allElements = getAllElements(document.body || document.documentElement);
+    for (var i = 0; i < allElements.length && headings.length < MAX_HEADINGS; i++) {
+      var el = allElements[i];
+      if (el.tagName && el.tagName.match(/^H[1-6]$/i)) {
+        if (!isVisible(el) || isBlocked(el)) continue;
+        var text = (el.textContent || '').replace(/\s+/g, ' ').trim();
+        if (!text || text.length > 300) continue;
+        var level = parseInt(el.tagName.charAt(1), 10) || 1;
+        var key = level + ':' + text;
+        if (seen[key]) continue;
+        seen[key] = true;
+        headings.push({ level: level, text: text });
+      }
     }
     return headings;
   }
@@ -186,9 +264,10 @@
   function getLinks() {
     var links = [];
     var seen = {};
-    var nodes = document.querySelectorAll('a[href]');
-    for (var i = 0; i < nodes.length && links.length < MAX_LINKS; i++) {
-      var a = nodes[i];
+    var allElements = getAllElements(document.body || document.documentElement);
+    for (var i = 0; i < allElements.length && links.length < MAX_LINKS; i++) {
+      var a = allElements[i];
+      if (a.tagName !== 'A') continue;
       if (!isVisible(a) || isBlocked(a)) continue;
       var href = a.getAttribute('href');
       if (!href) continue;
@@ -215,16 +294,26 @@
   }
 
   function getAccessibility(headings, selectedText) {
-    var images = document.images ? document.images.length : 0;
+    // Include Shadow DOM images and landmarks
+    var allElements = getAllElements(document.body || document.documentElement);
+    var images = 0;
     var withAlt = 0;
-    if (document.images) {
-      for (var i = 0; i < document.images.length; i++) {
-        if ((document.images[i].getAttribute('alt') || '').trim()) withAlt++;
+    var landmarks = 0;
+    for (var i = 0; i < allElements.length; i++) {
+      var el = allElements[i];
+      if (el.tagName === 'IMG') {
+        images++;
+        if ((el.getAttribute('alt') || '').trim()) withAlt++;
+      }
+      var role = el.getAttribute('role');
+      if (role && ['banner', 'navigation', 'main', 'contentinfo', 'complementary'].includes(role)) {
+        landmarks++;
+      }
+      var tag = el.tagName && el.tagName.toLowerCase();
+      if (['header', 'nav', 'main', 'footer', 'aside'].includes(tag)) {
+        landmarks++;
       }
     }
-    var landmarks = document.querySelectorAll(
-      'header, nav, main, footer, aside, [role="banner"], [role="navigation"], [role="main"], [role="contentinfo"], [role="complementary"]'
-    ).length;
     return {
       language: document.documentElement.getAttribute('lang') || 'unknown',
       landmarkCount: landmarks,
@@ -236,6 +325,8 @@
   }
 
   try {
+    // Handle infinite scroll pages
+    await scrollToBottom();
     var root = pickRoot();
     var headings = getHeadings();
     var selectedText = getSelectedText();

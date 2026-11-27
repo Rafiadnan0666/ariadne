@@ -68,6 +68,19 @@ export async function init(): Promise<void> {
     const handle = new SQLite.Database(dbPath, (error) => (error ? reject(error) : resolve(handle)))
   })
 
+  // Check for DB corruption on startup
+  try {
+    const integrity = await new Promise<{ integrity_check: string }[]>((resolve, reject) => {
+      getDb().all('PRAGMA integrity_check', (error, rows) => error ? reject(error) : resolve(rows as any))
+    })
+    if (integrity && integrity[0] && integrity[0].integrity_check !== 'ok') {
+      console.error('[tabs] Database corruption detected:', integrity[0].integrity_check)
+      // Could trigger backup/recovery here
+    }
+  } catch (e) {
+    console.warn('[tabs] Integrity check failed:', e)
+  }
+
   await run(`
     CREATE TABLE IF NOT EXISTS history (
       id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -459,7 +459,7 @@ export const SettingsPage: React.FC<SettingsPageProps> = ({
                     />
                   </label>
                   <button className="secondary-btn small" onClick={() => void window.electronAPI.security.refreshAdBlock()}>
-                    <Icon name="refresh" size={13} /> Update block lists now
+                    <Icon name="reload" size={13} /> Update block lists now
                   </button>
                   <button className="secondary-btn small" onClick={() => void window.electronAPI.security.adblock.downloadLists()}>
                     <Icon name="download" size={13} /> Download full EasyList/EasyPrivacy
@@ -674,7 +674,7 @@ const AdBlockAllowlist: React.FC = () => {
             <span key={site} style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'var(--color-bg-elevated)', padding: '4px 8px', borderRadius: '4px' }}>
               <span>{site}</span>
               <button className="icon-btn tiny" onClick={() => handleRemove(site)} aria-label={`Remove ${site}`}>
-                <Icon name="x" size={11} />
+                <Icon name="close" size={11} />
               </button>
             </span>
           ))

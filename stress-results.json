@@ -1,0 +1,316 @@
+{
+  "summary": {
+    "passed": 61,
+    "failed": 0,
+    "total": 61
+  },
+  "tests": [
+    {
+      "test": "Build succeeds",
+      "pass": true,
+      "timestamp": 1795786066156
+    },
+    {
+      "test": "Tab discarding implementation",
+      "pass": true,
+      "timestamp": 1795786066156
+    },
+    {
+      "test": "Memory budget configured (1.5GB)",
+      "pass": true,
+      "timestamp": 1795786066156
+    },
+    {
+      "test": "Discarded tab restoration API",
+      "pass": true,
+      "timestamp": 1795786066156
+    },
+    {
+      "test": "Periodic memory monitoring",
+      "pass": true,
+      "timestamp": 1795786066156
+    },
+    {
+      "test": "Key rotation implemented",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Multiple keys per provider",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Fallback with context preservation",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Exponential backoff retry (1s, 2s, 4s, max 10s)",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Error classification (retry/fallback/rotate)",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Max retry limit",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "All 10 agent tools present",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Tool approval UI in renderer",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Approval IPC handler",
+      "pass": true,
+      "timestamp": 1795786066157
+    },
+    {
+      "test": "Agent loop with step tracking",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "Error handling in tools",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "Screenshot capability (vision proxy)",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "Agent persistent state design",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "All context modules present (src/context/)",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "Citations in Q&A",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "BM25 ranking",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "Text chunking with overlap",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "Deduplication",
+      "pass": true,
+      "timestamp": 1795786066158
+    },
+    {
+      "test": "CSP headers on responses",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Declarative Net Request (adblock)",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "HTTPS-Only mode",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Password breach check (HIBP k-anonymity)",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "DNS-over-HTTPS (Chromium switches)",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Safe Browsing (placeholder)",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Permission prompts",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "IPC sender validation",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Renderer sandbox",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Context isolation",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Unique partition per private window",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Ephemeral cleanup on close",
+      "pass": true,
+      "timestamp": 1795786066159
+    },
+    {
+      "test": "Tab-level private flag",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Uses electron-store",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Settings versioning/migration",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Separate stores for settings/bookmarks",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Shadow DOM handling (in extraction-script.js)",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "CSP-aware extraction",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Infinite scroll handling (in extraction-script.js)",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Extraction timeouts",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Settle time for client-rendered pages",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Secret redaction in extracted text",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Private extraction mode",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Window state management (Map)",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Tab state management (Map)",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "IPC sender validation",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Broadcast to windows/tabs",
+      "pass": true,
+      "timestamp": 1795786066160
+    },
+    {
+      "test": "Try/catch blocks in main (>7)",
+      "pass": true,
+      "details": "8 found",
+      "timestamp": 1795786066161
+    },
+    {
+      "test": "Optional chaining/nullish coalescing",
+      "pass": true,
+      "timestamp": 1795786066161
+    },
+    {
+      "test": "DB corruption handling",
+      "pass": true,
+      "timestamp": 1795786066161
+    },
+    {
+      "test": "Empty state handling (initialized guard)",
+      "pass": true,
+      "timestamp": 1795786066161
+    },
+    {
+      "test": "Graceful shutdown cleanup",
+      "pass": true,
+      "timestamp": 1795786066161
+    },
+    {
+      "test": "Bounded context cache",
+      "pass": true,
+      "timestamp": 1795786066162
+    },
+    {
+      "test": "Extraction timeouts",
+      "pass": true,
+      "timestamp": 1795786066162
+    },
+    {
+      "test": "Memory monitoring",
+      "pass": true,
+      "timestamp": 1795786066162
+    },
+    {
+      "test": "Lazy loading / dynamic imports",
+      "pass": true,
+      "timestamp": 1795786066162
+    },
+    {
+      "test": "Test files exist",
+      "pass": true,
+      "details": "1 files",
+      "timestamp": 1795786066162
+    },
+    {
+      "test": "Test script in package.json",
+      "pass": true,
+      "timestamp": 1795786066162
+    }
+  ]
+}

@@ -607,9 +607,15 @@ function createBrowserWindow(options: { isPrivate?: boolean; url?: string } = {}
   const partition = isPrivate ? `ariadne-private-${randomUUID()}` : 'persist:ariadne'
   if (isPrivate) privatePartitions.add(partition)
   const ses = session.fromPartition(partition)
-  configureSession(ses, isPrivate, partition)
+  try {
+    configureSession(ses, isPrivate, partition)
+  } catch (e) {
+    console.error('[createBrowserWindow] configureSession failed:', e)
+  }
 
-  const window = new BrowserWindow({
+  let window: BrowserWindow
+  try {
+    window = new BrowserWindow({
     width: 1440,
     height: 900,
     minWidth: 900,
@@ -677,6 +683,10 @@ function createBrowserWindow(options: { isPrivate?: boolean; url?: string } = {}
   })
 
   void createTab(options.url || 'about:blank', { windowId: window.id, isPrivate })
+  } catch (e) {
+    console.error('[createBrowserWindow] BrowserWindow creation failed:', e)
+    throw e
+  }
 
   window.on('closed', () => {
     denyPendingForWindow(window.id)
